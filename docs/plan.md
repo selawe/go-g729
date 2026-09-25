@@ -104,7 +104,21 @@ go-g729/
 │       └── main.go                 # CLI: encode/decode PCM ↔ G.729 bitstream file
 │
 └── testdata/
-    └── itu/                        # ITU-T test vectors (algthm.bit, speech.ref, dll)
+    ├── itu/                        # ITU-T test vectors resmi
+    │   ├── speech.in               # Input PCM 16-bit 8kHz (dari G.729C package)
+    │   ├── algthm.bit              # Output encoder referensi (10 byte/frame)
+    │   ├── speech.ref              # Output decoder referensi (PCM)
+    │   ├── tame.bit                # Frame tame (all-zero excitation)
+    │   ├── tamede.ref              # Referensi decode tame frames
+    │   └── itu_std.bit             # ITU standard compliance bitstream
+    ├── golden/                     # Golden files untuk regression test
+    │   ├── g729a_encoder.bit       # Output encoder G.729A yang sudah divalidasi
+    │   └── g729_encoder.bit        # Output encoder G.729 Full yang sudah divalidasi
+    └── synthetic/                  # Sinyal sintetis untuk unit test
+        ├── tone_300hz.pcm          # Pure tone 300 Hz @ 8 kHz
+        ├── tone_1000hz.pcm         # Pure tone 1 kHz
+        ├── white_noise.pcm         # White noise
+        └── silence.pcm             # Silence (semua nol)
 ```
 
 ---
@@ -307,30 +321,496 @@ Urutan `Decode()` per frame:
 
 ## Strategi Testing
 
-### Unit Tests
-| Package | Approach |
-|---|---|
-| `bits` | Round-trip Pack/Unpack dengan hand-crafted ParamSet |
-| `dsp` | Autocorr vs. analytic formula; Levinson pada AR(1) process |
-| `lsp` | Root count = 10; LPC2LSP→LSP2LPC round-trip error < 1e-5 |
-| `pitch` | Sinusoidal input → correct lag; parity formula |
-| `codebook` | BuildCodeVector spot-check; gain round-trip |
-| `filter` | DC attenuation HPF; PostFilter output energy ≤ input energy |
+Testing berlapis dari unit → integrasi → compliance → kualitas perseptual.
+**Gate utama: ITU-T compliance harus lulus sebelum codec dinyatakan valid.**
 
-### ITU-T Compliance Tests (`g729_test.go`)
+---
+
+### Layer 1 — Unit Tests (per modul)
+
+Setiap paket internal ditest dengan input analitik yang hasilnya bisa diverifikasi secara matematis,
+tanpa dependensi pada modul lain.
+
+#### `internal/bits` — Bitstream Pack/Unpack
 ```go
-// Encoder: setiap 80-sample frame dari speech.in harus menghasilkan
-// frame bytes identik dengan algthm.bit (bit-exact)
-func TestITUEncoder(t *testing.T)
+// Round-trip ParamSet → bytes → ParamSet harus identik
+func TestBitstreamRoundTrip(t *testing.T) {
+    p := ParamSet{L0:1, L1:63, L2:15, L3:31, P1:100, P0:1,
+                  C1:0x1FFF, S1:0xF, GA1:7, GB1:15,
+                  P2:31, C2:0x1FFF, S2:0xF, GA2:7, GB2:15}
+    buf := make([]byte, 10)
+    Pack(buf, &p)
+    var p2 ParamSet
+    Unpack(&p2, buf)
+    assert(t, p == p2)
+}
 
-// Decoder: output tiap frame ±1 LSB dari speech.ref
-func TestITUDecoder(t *testing.T)
+// Verifikasi posisi bit masing-masing field tidak overlap
+func TestBitstreamFieldBoundaries(t *testing.T)
+
+// SID frame Annex B: marker bit L0=1, field 15 bit, padding 65 bit
+func TestBitstreamSIDFrame(t *testing.T)
 ```
 
-### Benchmarks
+#### `internal/dsp` — DSP Primitives
 ```go
-func BenchmarkEncode(b *testing.B)  // target: < 50 µs/frame di amd64
-func BenchmarkDecode(b *testing.B)  // target: < 30 µs/frame di amd64
+// Levinson pada AR(1): r[k]=ρ^k → a[1]=-ρ, error=1-ρ²
+func TestLevinsonAR1(t *testing.T) {
+    rho := float32(0.9)
+    r := [11]float32{}
+    for k := range r { r[k] = float32(math.Pow(float64(rho), float64(k))) }
+    a, _, _ := Levinson(r[:], 10)
+    assertClose(t, a[1], -rho, 1e-5)
+}
+
+// Levinson harus stabil: tidak NaN/Inf pada input edge case
+func TestLevinsonStability(t *testing.T)    // r[0]=0, near-singular matrix
+
+// HighPassFilter: input DC murni (nilai konstan) harus ter-attenuasi ke ~0
+func TestHighPassFilterDC(t *testing.T) {
+    state := [2]float32{}
+    dc := make([]float32, 800) // 100 ms DC
+    for i := range dc { dc[i] = 1000.0 }
+    HighPassFilter(dc, &state)
+    // setelah settling: |output| < 1.0
+    assertClose(t, dc[799], 0.0, 1.0)
+}
+
+// Autocorr: sinyal konstan → r[0]=N*A², r[k]=N*A² untuk semua k
+func TestAutocorrConstantSignal(t *testing.T)
+
+// Autocorr lag-0 harus selalu >= lag lainnya
+func TestAutocorrLag0Dominant(t *testing.T)
+```
+
+#### `internal/lsp` — LSP Conversion & Quantization
+```go
+// LPC2LSP harus menghasilkan tepat 10 root pada [0, π]
+func TestLPC2LSPRootCount(t *testing.T) {
+    a := [10]float32{0.1, -0.2, 0.15, -0.1, 0.05, -0.03, 0.02, -0.01, 0.005, -0.002}
+    lsp, ok := LPC2LSP(&a)
+    assert(t, ok, "root finding gagal")
+    assert(t, len(lsp) == 10)
+    for i := 1; i < 10; i++ {
+        assert(t, lsp[i] > lsp[i-1], "LSP tidak terurut naik")
+    }
+}
+
+// Round-trip LPC→LSP→LPC: error < 1e-5
+func TestLPCLSPRoundTrip(t *testing.T) {
+    a := randomStableLP(10)
+    lsp, _ := LPC2LSP(&a)
+    aBack := LSP2LPC(lsp)
+    for i := range a {
+        assertClose(t, a[i], aBack[i], 1e-5)
+    }
+}
+
+// Quantize→Dequantize: rekonstruksi LSP harus mendekati input (distorsi terbatas)
+func TestLSPQuantizeDequantize(t *testing.T) {
+    lsp, _ := LPC2LSP(&typicalLP)
+    L0, L1, L2, L3, lspQ := QuantizeLSP(lsp, prevLSP, maMemory)
+    lspBack := DequantizeLSP(L0, L1, L2, L3, prevLSP, maMemory)
+    // Distorsi kuantisasi: MSE < 0.01 (dalam domain cosine)
+    assertMSE(t, lspQ[:], lspBack[:], 0.01)
+}
+```
+
+#### `internal/pitch` — Pitch Estimation
+```go
+// Tone 300 Hz @ 8kHz → periode = 8000/300 ≈ 26.67 → P1 ∈ [24, 30]
+func TestOpenLoopPitchTone300Hz(t *testing.T) {
+    pcm := generateTone(300.0, 8000, 240)
+    candidates := OpenLoopPitch(pcm)
+    closest := minDistance(candidates[:], 27)
+    assert(t, closest <= 3, "estimasi pitch jauh dari referensi")
+}
+
+// Tone 100 Hz → P1 ≈ 80; menguji batas atas pitch range
+func TestOpenLoopPitchLowTone(t *testing.T)
+
+// Parity bit: XOR bit 1..7 dari P1 harus menghasilkan paritas ganjil
+func TestParityBit(t *testing.T) {
+    for p1 := 0; p1 < 256; p1++ {
+        p0 := ParityBit(uint8(p1))
+        popcount := bits.OnesCount8(uint8(p1)>>1) + int(p0)
+        assert(t, popcount%2 == 1, "paritas bukan ganjil")
+    }
+}
+
+// Fractional pitch interpolation: error interpolasi vs. sinyal referensi < 1%
+func TestSincInterpolationAccuracy(t *testing.T)
+```
+
+#### `internal/codebook` — Algebraic Codebook & Gain
+```go
+// Codebook yang dipilih SearchAlgebraicA harus menurunkan WMSE vs. zero
+func TestCodebookSearchImprovement(t *testing.T) {
+    target, h := generateRandomTargetAndImpulse(40)
+    idx, signs := SearchAlgebraicA(target, h)
+    cv := BuildCodeVector(idx, signs, VariantG729A)
+    assert(t, WMSE(target, h, cv) < WMSE(target, h, zeros40))
+}
+
+// Setiap indeks valid harus menghasilkan vektor dengan jumlah non-zero yang benar
+func TestCodeVectorPulseCount(t *testing.T) {
+    for idx := uint16(0); idx < 512; idx++ {
+        cv := BuildCodeVector(idx, 0xF, VariantG729A)
+        nonzero := countNonZero(cv[:])
+        assert(t, nonzero == 2, "G.729A harus 2 pulsa")
+    }
+}
+
+// Gain round-trip: QuantizeGain→DequantizeGain selisih < 5%
+func TestGainQuantizeRoundTrip(t *testing.T)
+
+// Gain prediction MA memory harus diupdate dengan benar setelah setiap frame
+func TestGainPredictionMemoryUpdate(t *testing.T)
+```
+
+#### `internal/filter` — Perceptual & Post-filter
+```go
+// W(z) = A(z/γ1)/A(z/γ2): pastikan koefisien terkalkulasi benar
+func TestPerceptualWeightCoeffs(t *testing.T)
+
+// PostFilter: energi output ≤ energi input (gain scaling AGC)
+func TestPostFilterEnergyReduction(t *testing.T) {
+    synthSpeech := generateSpeech(40)
+    out := make([]float32, 40)
+    PostFilter(out, synthSpeech, &lpCoeff, pitch, excBuf, &ltMem, &stMem, &gainState)
+    assert(t, energy(out) <= energy(synthSpeech)*1.05) // 5% toleransi AGC
+}
+```
+
+#### `internal/vad` — Annex B
+```go
+// Silence berkepanjangan harus trigger VAD inactive setelah hangfire 8 frame
+func TestVADSilenceDetection(t *testing.T)
+
+// Speech aktif harus selalu VAD active
+func TestVADSpeechDetection(t *testing.T)
+
+// SID frame harus dikirim setiap 8 frame saat DTX aktif
+func TestDTXSIDInterval(t *testing.T)
+
+// CNG output harus dalam rentang energi yang sesuai SID parameter
+func TestCNGEnergyMatch(t *testing.T)
+```
+
+---
+
+### Layer 2 — Synthetic Signal Tests
+
+Test dengan sinyal yang karakteristiknya diketahui secara pasti.
+File sinyal ada di `testdata/synthetic/`.
+
+| Sinyal | Kondisi | Assertion |
+|---|---|---|
+| Pure tone 300 Hz | Normal encode/decode | Pitch P1 ∈ [24,30]; SNR > 20 dB setelah decode |
+| Pure tone 1 kHz | Normal encode/decode | Output tidak clipping; SNR > 20 dB |
+| White noise | Encode/decode 10 frame | Encoder tidak crash; output dalam range int16 |
+| Silence (nol) | Dengan Annex B aktif | Encoder kirim SID frame (10 byte, bukan full frame) |
+| Full-scale clip (+32767) | Stress test | Levinson tidak diverge; encoder tidak NaN/panic |
+| Ramp signal | Stress test | Autocorr tidak Inf; LP coefficients stabil |
+| Chirp (20→4000 Hz) | Transient | Encoder/decoder tidak crash sepanjang sweep |
+
+```go
+func TestSyntheticTone300Hz(t *testing.T) {
+    pcm := loadPCM("testdata/synthetic/tone_300hz.pcm")
+    enc := NewEncoder(VariantG729A)
+    dec := NewDecoder(VariantG729A)
+
+    var signalE, noiseE float64
+    bits := make([]byte, 10)
+    out  := make([]int16, 80)
+
+    for i := 0; i < len(pcm)/80; i++ {
+        frame := pcm[i*80 : (i+1)*80]
+        enc.Encode(bits, frame)
+        dec.Decode(out, bits)
+        for j, s := range frame {
+            signalE += float64(s) * float64(s)
+            e := float64(out[j]) - float64(s)
+            noiseE  += e * e
+        }
+    }
+    snr := 10 * math.Log10(signalE/noiseE)
+    if snr < 20.0 {
+        t.Errorf("SNR tone 300Hz: %.2f dB (want >= 20)", snr)
+    }
+}
+```
+
+---
+
+### Layer 3 — ITU-T Compliance Tests (Gate Utama)
+
+**File:** `g729_test.go`
+
+Ini adalah uji kebenaran paling kritis. Codec dinyatakan valid hanya jika lulus semua compliance test.
+
+#### 3a. Encoder Bit-Exact Test
+```go
+func TestITUEncoderBitExact(t *testing.T) {
+    pcm := readPCM16("testdata/itu/speech.in")
+    ref := readBitstream("testdata/itu/algthm.bit") // [][]byte, 10 byte/frame
+    enc := NewEncoder(VariantG729A)
+
+    for i, refFrame := range ref {
+        got := make([]byte, 10)
+        if err := enc.Encode(got, pcm[i*80:(i+1)*80]); err != nil {
+            t.Fatalf("frame %d: encode error: %v", i, err)
+        }
+        if !bytes.Equal(got, refFrame) {
+            t.Errorf("frame %d:\n  got  %x\n  want %x", i, got, refFrame)
+        }
+    }
+}
+```
+
+#### 3b. Decoder ±1 LSB Test
+```go
+func TestITUDecoderPlusMinusOneLSB(t *testing.T) {
+    frames := readBitstream("testdata/itu/algthm.bit")
+    ref    := readPCM16("testdata/itu/speech.ref")
+    dec    := NewDecoder(VariantG729A)
+
+    maxDiff := 0
+    for i, frame := range frames {
+        got := make([]int16, 80)
+        dec.Decode(got, frame)
+        for j := range got {
+            diff := abs(int(got[j]) - int(ref[i*80+j]))
+            if diff > maxDiff { maxDiff = diff }
+            if diff > 1 {
+                t.Errorf("frame %d sample %d: diff=%d (got=%d want=%d)",
+                    i, j, diff, got[j], ref[i*80+j])
+            }
+        }
+    }
+    t.Logf("max LSB diff: %d", maxDiff)
+}
+```
+
+#### 3c. Tame Frame Test
+```go
+// Tame frame = excitation nol; menguji decoder pada kondisi degenerate
+func TestITUTameFrames(t *testing.T) {
+    frames := readBitstream("testdata/itu/tame.bit")
+    ref    := readPCM16("testdata/itu/tamede.ref")
+    dec    := NewDecoder(VariantG729A)
+    // Toleransi sama: ±1 LSB
+}
+```
+
+#### 3d. G.729 Full Compliance
+```go
+// Sama seperti 3a dan 3b tapi dengan VariantG729 dan test vector G.729 Full
+func TestITUEncoderFullBitExact(t *testing.T)
+func TestITUDecoderFullPlusMinusOneLSB(t *testing.T)
+```
+
+---
+
+### Layer 4 — Round-Trip Quality Metrics
+
+Setelah compliance lulus, ukur kualitas perseptual secara objektif.
+
+#### SNR (Signal-to-Noise Ratio)
+```go
+func TestRoundTripSNR(t *testing.T) {
+    pcm := readPCM16("testdata/itu/speech.in")
+    enc := NewEncoder(VariantG729A)
+    dec := NewDecoder(VariantG729A)
+
+    var sigE, noiseE float64
+    bits := make([]byte, 10)
+    out  := make([]int16, 80)
+
+    for i := 0; i < len(pcm)/80; i++ {
+        frame := pcm[i*80 : (i+1)*80]
+        enc.Encode(bits, frame)
+        dec.Decode(out, bits)
+        for j, s := range frame {
+            sigE   += float64(s) * float64(s)
+            e      := float64(out[j]) - float64(s)
+            noiseE += e * e
+        }
+    }
+    snr := 10 * math.Log10(sigE / noiseE)
+    t.Logf("Round-trip SNR: %.2f dB")
+    // G.729A clean speech: typical SNR ~25-30 dB
+    if snr < 25.0 {
+        t.Errorf("SNR terlalu rendah: %.2f dB (want >= 25)", snr)
+    }
+}
+```
+
+#### PESQ via External Binary
+```go
+// TestPESQ menjalankan PESQ binary ITU-T P.862 dan memvalidasi MOS-LQO score.
+// Dieksekusi hanya jika binary tersedia: go test -run TestPESQ -pesq=/path/to/pesq
+func TestPESQ(t *testing.T) {
+    if pesqBin == "" { t.Skip("pesq binary tidak tersedia") }
+
+    // 1. Encode speech.in → decoded.pcm (encode lalu decode)
+    // 2. exec: pesq +8000 speech.in decoded.pcm
+    // 3. Parse output: "MOS-LQO: 3.92"
+    // G.729A referensi ITU-T: MOS-LQO ≈ 3.9
+    if score < 3.7 {
+        t.Errorf("PESQ MOS-LQO: %.2f (want >= 3.7)", score)
+    }
+}
+```
+
+---
+
+### Layer 5 — Fuzz Testing (Decoder Robustness)
+
+Decoder harus tahan semua input arbitrer — tidak boleh panic, crash, atau loop tak terbatas.
+
+```go
+// go test -fuzz=FuzzDecode -fuzztime=5m
+func FuzzDecode(f *testing.F) {
+    // Seed corpus: frame valid dari ITU test vectors
+    for _, frame := range readBitstream("testdata/itu/algthm.bit")[:10] {
+        f.Add(frame)
+    }
+
+    f.Fuzz(func(t *testing.T, data []byte) {
+        if len(data) < 10 { return }
+        dec := NewDecoder(VariantG729A)
+        out := make([]int16, 80)
+
+        // Tidak boleh panic apapun input-nya
+        _ = dec.Decode(out, data[:10])
+
+        // Output harus dalam range int16 yang valid
+        for _, s := range out {
+            if int(s) > 32767 || int(s) < -32768 {
+                t.Errorf("output out of range: %d", s)
+            }
+        }
+    })
+}
+
+// Fuzz encoder juga: input PCM arbitrer tidak boleh crash
+func FuzzEncode(f *testing.F) {
+    f.Fuzz(func(t *testing.T, data []byte) {
+        if len(data) < 160 { return } // 80 sample × 2 byte
+        pcm := make([]int16, 80)
+        for i := range pcm { pcm[i] = int16(binary.LittleEndian.Uint16(data[i*2:])) }
+        enc := NewEncoder(VariantG729A)
+        dst := make([]byte, 10)
+        _ = enc.Encode(dst, pcm)
+    })
+}
+```
+
+---
+
+### Layer 6 — Regression Tests (Golden Files)
+
+Setelah compliance ITU tercapai, simpan output sebagai **golden files** untuk mendeteksi regresi saat refactor.
+
+```go
+var updateGolden = flag.Bool("update-golden", false, "regenerasi golden files")
+
+func TestGoldenEncoderG729A(t *testing.T) {
+    pcm := readPCM16("testdata/itu/speech.in")
+    enc := NewEncoder(VariantG729A)
+
+    var got []byte
+    bits := make([]byte, 10)
+    for i := 0; i < len(pcm)/80; i++ {
+        enc.Encode(bits, pcm[i*80:(i+1)*80])
+        got = append(got, bits...)
+    }
+
+    if *updateGolden {
+        os.WriteFile("testdata/golden/g729a_encoder.bit", got, 0644)
+        return
+    }
+    want, _ := os.ReadFile("testdata/golden/g729a_encoder.bit")
+    if !bytes.Equal(got, want) {
+        t.Error("output berbeda dari golden — ada regresi")
+    }
+}
+```
+
+Golden file diupdate dengan: `go test -run TestGolden -update-golden`
+
+---
+
+### Layer 7 — Performance Benchmarks (Gate Non-Fungsional)
+
+```go
+func BenchmarkEncodeG729A(b *testing.B) {
+    enc   := NewEncoder(VariantG729A)
+    input := make([]int16, 80)
+    dst   := make([]byte, 10)
+    b.ReportAllocs()
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        enc.Encode(dst, input)
+    }
+    // Target: < 50 µs/frame; 0 allocs/op
+}
+
+func BenchmarkDecodeG729A(b *testing.B) {
+    dec   := NewDecoder(VariantG729A)
+    frame := validFrame // 10 byte dari ITU test vectors
+    dst   := make([]int16, 80)
+    b.ReportAllocs()
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        dec.Decode(dst, frame)
+    }
+    // Target: < 30 µs/frame; 0 allocs/op
+}
+
+func BenchmarkEncodeG729Full(b *testing.B) { ... }  // Target: < 80 µs/frame
+```
+
+Jalankan: `go test -bench=. -benchmem -benchtime=5s`
+
+---
+
+### Urutan Eksekusi Testing per Fase
+
+| Fase Implementasi | Test yang Dijalankan | Gate |
+|---|---|---|
+| Fase 1 (Bitstream) | `TestBitstreamRoundTrip`, `TestBitstreamFieldBoundaries` | Wajib lulus |
+| Fase 2 (DSP) | `TestLevinson*`, `TestHighPass*`, `TestAutocorr*` | Wajib lulus |
+| Fase 3 (LSP) | `TestLPCLSP*`, `TestLSPQuantize*` | Wajib lulus |
+| Fase 4 (Pitch) | `TestOpenLoopPitch*`, `TestParityBit`, `TestSincInterp*` | Wajib lulus |
+| Fase 5 (Codebook) | `TestCodebookSearch*`, `TestCodeVector*` | Wajib lulus |
+| Fase 6 (Gain) | `TestGainQuantize*` | Wajib lulus |
+| Fase 7-8 (Filter+VAD) | `TestPostFilter*`, `TestVAD*`, `TestDTX*` | Wajib lulus |
+| Fase 9-10 (Assembly) | Synthetic signal tests, SNR round-trip | Wajib lulus |
+| Fase 11 (Integration) | **ITU-T Compliance (Layer 3)** — bit-exact + ±1 LSB | **Hard gate** |
+| Post-compliance | PESQ ≥ 3.7, Fuzz 5 menit, Golden file snapshot | Wajib lulus |
+| Pre-release | Benchmark gate: < 50 µs encode, 0 allocs | Wajib lulus |
+
+### Perintah Lengkap Testing
+```bash
+# Unit + compliance
+go test ./...
+
+# Dengan race detector
+go test -race ./...
+
+# Benchmark + alokasi
+go test -bench=. -benchmem -benchtime=5s ./...
+
+# Fuzz decoder (CI: 1 menit; local: 5 menit+)
+go test -fuzz=FuzzDecode -fuzztime=1m .
+
+# Update golden files setelah compliance lulus
+go test -run TestGolden -update-golden .
+
+# PESQ (jika binary tersedia)
+go test -run TestPESQ -pesq=/usr/local/bin/pesq .
 ```
 
 ---
