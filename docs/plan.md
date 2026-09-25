@@ -36,12 +36,45 @@ Karakteristik teknis codec:
 ## Bitstream Layout (80 bit = 10 byte per frame)
 
 ```
-┌─────── LSP (18 bit) ──────┬──────────── Subframe 1 (31 bit) ────────────┬──── Subframe 2 (31 bit) ────┐
+┌─────── LSP (18 bit) ──────┬──────────── Subframe 1 (33 bit) ────────────┬──── Subframe 2 (29 bit) ────┐
 │ L0(1) L1(7) L2(5) L3(5)  │ P1(8) P0(1) C1(13) S1(4) GA1(3) GB1(4)    │ P2(5) C2(13) S2(4) GA2(3) GB2(4) │
 └───────────────────────────┴──────────────────────────────────────────────┴─────────────────────────────┘
 ```
 
-Annex B SID frame: 15 bit (L0=1, L1=5, L2=4, L3=5) + 65 bit padding, total 80 bit.
+Perhitungan alokasi bit (ITU-T Rec. G.729 Table 1):
+- **LSP:** 18 bit (L0: 1, L1: 7, L2: 5, L3: 5)
+- **Subframe 1:** 33 bit (P1: 8, P0: 1, C1: 13, S1: 4, GA1: 3, GB1: 4)
+- **Subframe 2:** 29 bit (P2: 5, C2: 13, S2: 4, GA2: 3, GB2: 4)
+- **Total per frame:** 18 + 33 + 29 = **80 bit (10 byte)**.
+
+### Bit Mapping per Byte (Network Byte Order / MSB first)
+
+```
+Byte 0: [ L0(1b) | L1(7b) ]
+Byte 1: [ L2(5b) | L3_msb(3b) ]
+Byte 2: [ L3_lsb(2b) | P1_msb(6b) ]
+Byte 3: [ P1_lsb(2b) | P0(1b) | C1_msb(5b) ]
+Byte 4: [ C1_mid(8b) ]
+Byte 5: [ S1(4b) | GA1(3b) | GB1_msb(1b) ]
+Byte 6: [ GB1_lsb(3b) | P2(5b) ]
+Byte 7: [ C2_msb(8b) ]
+Byte 8: [ C2_lsb(5b) | S2_msb(3b) ]
+Byte 9: [ S2_lsb(1b) | GA2(3b) | GB2(4b) ]
+```
+
+### Annex B Frame Types (RFC 3551 / ITU-T G.729B)
+
+Codec Annex B menggunakan **panjang byte input/output** untuk mendeteksi tipe frame (bukan marker bit in-band):
+- **Frame Suara (Active Speech):** **10 byte (80 bit)**.
+- **Frame SID (Silence Insertion Descriptor):** **2 byte (16 bit)**:
+  - Switched predictor index: 1 bit
+  - LSF 1st-stage codebook: 5 bit
+  - LSF 2nd-stage codebook: 4 bit
+  - Energy (gain): 5 bit
+  - Unused padding: 1 bit (selalu 0)
+  - Total: 16 bit (2 octet).
+- **Frame Untransmitted (DTX Silence Suppression):** **0 byte** (tidak ada paket dikirim selama hening berkelanjutan).
+- **Packet Loss Erasure:** **0 byte / nil buffer** ke Decoder untuk memicu PLC (*Packet Loss Concealment*).
 
 ---
 
@@ -79,6 +112,7 @@ go-g729/
 │   ├── lsp/
 │   │   ├── lpc2lsp.go              # A(z) → LSP: Chebyshev 60-pt grid + bisection root finding
 │   │   ├── lsp2lpc.go              # LSP → A(z): polynomial reconstruction
+│   │   ├── stability.go            # LSP ordering + minimum distance separation (d_min = 0.005 rad)
 │   │   ├── quantize.go             # MA prediction + two-stage split VQ (encode)
 │   │   ├── dequantize.go           # MA prediction inverse + VQ lookup (decode)
 │   │   └── interpolate.go          # Linear interpolation antar frame (0.5×prev + 0.5×curr)
@@ -87,7 +121,7 @@ go-g729/
 │   │   ├── openloop.go             # Open-loop pitch: 3 kandidat terbaik, range [20,143]
 │   │   ├── closedloop.go           # Closed-loop fractional pitch (1/3 resolusi untuk T<85)
 │   │   ├── interp.go               # Sinc interpolation excitation buffer untuk fractional lag
-│   │   └── parity.go               # Odd-parity bit P0 = XOR(bit 1..7 of P1)
+│   │   └── parity.go               # Odd-parity bit P0 = XOR(6 MSB of P1, bit 2..7)
 │   │
 │   ├── codebook/
 │   │   ├── algebraic.go            # BuildCodeVector + struktur track — shared G.729A dan G.729 Full
@@ -142,24 +176,57 @@ const (
 type Variant int
 
 const (
-    VariantG729A Variant = iota  // Annex A: 2-pulse reduced complexity (default)
-    VariantG729                  // Full: 4-pulse ACELP
+    VariantG729A Variant = iota  // Annex A: reduced-complexity fast heuristic search (default)
+    VariantG729                  // Full: 4-pulse ACELP nested search
 )
 
-// Encoder mengonversi PCM int16 ke G.729 bitstream, satu frame sekaligus.
-// Tidak goroutine-safe — buat satu Encoder per goroutine untuk concurrent use.
+type FrameType int
+
+const (
+    FrameSpeech        FrameType = iota // 10 byte (active voice frame)
+    FrameSID                            // 2 byte (comfort noise update / Annex B)
+    FrameUntransmitted                  // 0 byte (DTX silence suppression, no packet transmitted)
+)
+
+// Config mengatur parameter operasional encoder.
+type Config struct {
+    Variant   Variant // VariantG729A (default) atau VariantG729
+    EnableVAD bool    // true: Annex B VAD/DTX aktif; false: CBR 8 kbps konstan (annexb=no di SDP)
+}
+
+// DefaultConfig mengembalikan konfigurasi standar G.729A dengan VAD aktif.
+func DefaultConfig() Config {
+    return Config{
+        Variant:   VariantG729A,
+        EnableVAD: true,
+    }
+}
+
+// Encoder mengonversi PCM int16 ke bitstream G.729, satu frame (80 sample = 10 ms) per panggilan.
+// Tidak goroutine-safe — buat satu Encoder per stream/goroutine.
 type Encoder interface {
-    Encode(dst []byte, src []int16) error  // len(src)==80, len(dst)>=10
+    // Encode memproses 80 sampel PCM int16 dan menulis bitstream ke dst (kapasitas minimal 10 byte).
+    // Mengembalikan:
+    // - n: jumlah byte yang ditulis (10 untuk FrameSpeech, 2 untuk FrameSID, 0 untuk FrameUntransmitted)
+    // - frameType: jenis frame yang dihasilkan
+    // - err: nil jika sukses, atau error jika panjang buffer tidak valid
+    Encode(dst []byte, src []int16) (n int, frameType FrameType, err error)
     Reset()
 }
 
-// Decoder mengonversi G.729 bitstream ke PCM int16, satu frame sekaligus.
+// Decoder mengonversi bitstream G.729 ke PCM int16, satu frame sekaligus.
+// Tidak goroutine-safe — buat satu Decoder per stream/goroutine.
 type Decoder interface {
-    Decode(dst []int16, src []byte) error  // len(src)==10, len(dst)>=80
+    // Decode merekonstruksi 80 sampel PCM int16 ke dst (kapasitas minimal 80 int16).
+    // Parameter src mendukung:
+    // - len(src) == 10: frame speech normal
+    // - len(src) == 2:  frame SID Annex B (sintesis comfort noise)
+    // - len(src) == 0 atau src == nil: Packet Loss Concealment (PLC / frame erasure)
+    Decode(dst []int16, src []byte) error
     Reset()
 }
 
-func NewEncoder(v Variant) Encoder
+func NewEncoder(cfg Config) Encoder
 func NewDecoder(v Variant) Decoder
 ```
 
@@ -170,22 +237,30 @@ func NewDecoder(v Variant) Decoder
 ### encoder
 ```go
 type encoder struct {
-    variant  Variant
-    hpfState [2]float32                   // high-pass filter delay line
-    prevLSP  [LPOrder]float32             // LSP kuantisasi frame sebelumnya
-    lspMA    [4][LPOrder]float32          // MA predictor memory (4 frame)
-    excBuf   [145 + FrameSamples]float32  // excitation history (max pitch=143 + subfr=40+guard)
-    synthMem [LPOrder]float32             // LP synthesis filter memory
-    wfiltMem [LPOrder]float32             // perceptual weighting filter memory
-    gainPred [4]float32                   // MA gain prediction memory
-    openPitch int                         // open-loop pitch estimate carry antar subframe
-    // pre-allocated working buffers — zero alloc di Encode()
-    speech   [FrameSamples]float32
-    target1  [SubframeSamples]float32
-    target2  [SubframeSamples]float32
-    impulse  [SubframeSamples]float32
-    phiMat   [SubframeSamples][SubframeSamples]float32  // correlation matrix Φ[i][j]
-    vadState vad.State
+    variant   Variant
+    enableVAD bool
+    hpfState  [2]float32                   // high-pass filter delay line (2nd order IIR)
+    prevLSP   [LPOrder]float32             // LSP terkuantisasi frame sebelumnya (untuk interpolasi)
+    lspMA     [4][LPOrder]float32          // MA predictor memory (4 frame history)
+    
+    // History buffers untuk analisis DSP
+    speechBuf [240]float32                 // 240-pt window: 120 past + 80 current + 40 lookahead
+    oldWsp    [143]float32                 // past weighted speech history untuk open-loop pitch (lag 20..143)
+    excBuf    [154 + FrameSamples]float32  // excitation history: PIT_MAX(143) + L_INTER(10) + guard + 80 sample
+    
+    // Filter memories
+    synthMem  [LPOrder]float32             // 1/A(z) LP synthesis filter memory
+    wSynthMem [LPOrder]float32             // weighted synthesis filter W(z)/A(z) zero-input memory
+    gainPred  [4]float32                   // MA gain prediction memory (log domain energy)
+    openPitch int                          // open-loop pitch carry-over
+    
+    // Pre-allocated working buffers — zero alloc di Encode()
+    target1   [SubframeSamples]float32     // target signal subframe 1 (40 sample)
+    target2   [SubframeSamples]float32     // target signal subframe 2 (40 sample)
+    impulse   [SubframeSamples]float32     // impulse response h(n) (40 sample)
+    phiMat    [SubframeSamples][SubframeSamples]float32  // correlation matrix Φ[i][j] (40×40)
+    vadState  vad.State                    // Annex B VAD decision state
+    dtxState  vad.DTXState                 // Annex B DTX state machine (hangover, SID interval)
 }
 ```
 
@@ -193,19 +268,23 @@ type encoder struct {
 ```go
 type decoder struct {
     variant    Variant
-    prevLSP    [LPOrder]float32
-    lspMA      [4][LPOrder]float32
-    excBuf     [145 + FrameSamples]float32
-    synthMem   [LPOrder]float32
-    hpfState   [2]float32
-    pfSTMem    [LPOrder]float32             // post-filter short-term memory
-    pfGain     float32                      // post-filter AGC state
-    gainPred   [4]float32
-    // Annex B / PLC (Packet Loss Concealment)
-    lastPitch  int
-    lastGain   float32
-    badFrames  int
-    cngState   vad.CNGState
+    prevLSP    [LPOrder]float32             // LSP frame sebelumnya
+    lspMA      [4][LPOrder]float32          // MA predictor memory
+    excBuf     [154 + FrameSamples]float32  // excitation buffer (past history + current)
+    synthMem   [LPOrder]float32             // 1/A(z) synthesis filter memory
+    hpfState   [2]float32                   // output post-filter high-pass delay line
+    
+    // Post-filter memories (short-term formant + long-term pitch + tilt + AGC)
+    pfSTMem    [LPOrder]float32             // post-filter short-term IIR memory
+    pfLTMem    [143 + SubframeSamples]float32 // post-filter long-term past speech memory (pitch lag <= 143)
+    pfTiltMem  float32                      // post-filter tilt compensation delay state (1st order FIR)
+    pfGain     float32                      // post-filter AGC smoothed gain state
+    
+    // Annex B & PLC (Packet Loss Concealment / Frame Erasure)
+    lastPitch  int                          // pitch lag frame terakhir (untuk PLC repetition)
+    lastGain   float32                      // pitch gain terakhir (di-attenuate 0.98 tiap lost frame)
+    badFrames  int                          // counter consecutive packet loss
+    cngState   vad.CNGState                 // Comfort Noise Generator state (SID parameters)
 }
 ```
 
@@ -249,21 +328,22 @@ Test: Levinson pada AR(1) signal harus return koefisien eksak.
 ### Fase 3 — LSP Layer
 **File:** `internal/lsp/*.go`
 
-- `LPC2LSP` — Chebyshev polynomial, 60-point grid [-1,1] + bisection untuk root finding
-- `LSP2LPC` — rekonstruksi A(z) dari pasangan LSP cosine
-- `InterpolateLSP` — lsp_sf1 = 0.5·prev + 0.5·curr, lsp_sf2 = curr
+- `LPC2LSP` — Chebyshev polynomial, 60-point grid [-1,1] + bisection untuk root finding (fallback ke `prevLSP` bila akar < 10)
+- `StabilizeLSP` — Memastikan urutan monotonik naik $0 < \omega_1 < \dots < \omega_{10} < \pi$ dan jarak minimum $d_{min} = 0.005$ rad
+- `LSP2LPC` — Rekonstruksi A(z) dari pasangan LSP cosine
+- `InterpolateLSP` — lsp_sf1 = 0.5·prev + 0.5·curr, lsp_sf2 = curr (menggunakan quantized LSP untuk sintesis)
 - `QuantizeLSP` — L0 pilih MA predictor set → residual → L1 (128-entry) → L2/L3 (32-entry)
-- `DequantizeLSP` — inverse lookup + MA update
+- `DequantizeLSP` — Inverse lookup + MA update + `StabilizeLSP`
 
-Test: LPC→LSP→LPC round-trip error < 1e-5; quantize→dequantize match ITU reference.
+Test: LPC→LSP→LPC round-trip error < 1e-5; quantize→dequantize match ITU reference; stability check menstabilkan LSF tidak berurutan.
 
 ### Fase 4 — Pitch (paralel dengan Fase 5)
 **File:** `internal/pitch/*.go`
 
-- `InterpExcitation` — sinc interpolation dari excBuf untuk fractional lag
-- `OpenLoopPitch` — normalized autocorrelation, 3 kandidat terbaik di [20,143]
-- `ClosedLoopPitch` — target/impulse-response cross-correlation; fractional 1/3 untuk T<85
-- `ParityBit` — XOR bit 1..7 dari P1
+- `InterpExcitation` — Sinc interpolation dari excBuf untuk fractional lag (UP_SAMP=3, filter length 10)
+- `OpenLoopPitch` — Normalized autocorrelation pada sinyal weighted speech `oldWsp`, 3 kandidat terbaik di [20,143]
+- `ClosedLoopPitch` — Cross-correlation target/impulse response; fractional 1/3 untuk delay < 85
+- `ParityBit` — Odd-parity bit P0 = XOR(6 bit MSB dari P1, yaitu bit 2..7)
 
 ### Fase 5 — Algebraic Codebook (paralel dengan Fase 4)
 **File:** `internal/codebook/algebraic*.go`
@@ -294,41 +374,70 @@ Optimisasi kunci (berlaku keduanya): hitung Φ[i][j] = Σ h[n-i]·h[n-j] sekali 
 ### Fase 7 — Filter
 **File:** `internal/filter/perceptual.go`, `postfilter.go`
 
-- `PerceptualWeightCoeffs` — derive numerator/denominator W(z) dari LP a[]
+- `PerceptualWeightCoeffs` — derive numerator/denominator W(z) dari unquantized LP a[]
 - `ApplyPerceptualFilter` — filter speech untuk target signal computation
 - `PostFilter` — long-term (pitch) + short-term (formant) + tilt compensation + AGC
 
 ### Fase 8 — Annex B (VAD/DTX/CNG)
 **File:** `internal/vad/*.go`
 
-- `VAD` — energy + zero-crossing + spectral measure → active/inactive
-- `DTX` — kirim SID frame setiap 8 frame saat silence; hangfire 8 frame di awal silence
-- `CNG` — bangkitkan comfort noise dari parameter SID di decoder
+- `VAD` — Energy + zero-crossing + spectral tilt (reflection coeff 1) + background noise estimate → active/inactive
+- `DTX` — State machine: Active Speech → Hangover (8 frame) → Inactive. Transmit SID (2 byte) pada awal hening dan periodik setiap 8 frame; selain itu 0 byte (untransmitted)
+- `CNG` — Bangkitkan comfort noise dari parameter SID (energi + LSF) di decoder menggunakan pseudo-random Gaussian excitation
 
-SID frame: marker di bit L0=1, parameter LSP 14 bit + log energy 1 bit.
+Format SID Frame (RFC 3551): **2 byte (16 bit)** = 1 bit switched predictor + 5 bit LSF stage 1 + 4 bit LSF stage 2 + 5 bit energy + 1 bit unused pad.
 
 ### Fase 9 — Encoder Assembly
 **File:** `encoder.go`
 
-Urutan `Encode()` per frame:
-1. int16 → float32, `HighPassFilter`
-2. Analysis window → `Autocorr` → `Levinson` → LP `a[]`
-3. **Annex B path**: jika VAD inactive → encode SID frame, return
-4. `LPC2LSP` → `QuantizeLSP` → L0,L1,L2,L3
-5. `InterpolateLSP` → 2 set LP → `LSP2LPC`; `PerceptualWeightCoeffs` per subframe
-6. `OpenLoopPitch` pada weighted residual
-7. **Subframe 1:** target signal → `ClosedLoopPitch` → P1/P0 → `SearchAlgebraicA/Full` → C1/S1 → `QuantizeGain` → GA1/GB1; update excBuf + synthMem
-8. **Subframe 2:** sama, P2 = delta (5-bit dari P1)
-9. `Pack` → 10 byte output
+Urutan `Encode(dst []byte, src []int16) (int, FrameType, error)` per frame:
+1. Validasi buffer input (`len(src) == 80`) dan output (`len(dst) >= 10`).
+2. int16 → float32, `HighPassFilter` 2nd-order.
+3. Update `speechBuf`: geser 160 sampel lama ke kiri, masukkan 80 sampel baru di `speechBuf[160:240]`. (Mendukung window analisis 240 sampel dengan lookahead 40 sampel).
+4. Analysis window (240-pt asymmetric Hamming) → `Autocorr` → `Levinson` → LP `a[]`.
+5. **Annex B path** (jika `enableVAD == true`):
+   - Hitung VAD metric. Jika inactive: jalankan DTX state machine.
+   - Jika DTX memutuskan kirim SID: pack 15 bit parameter SID ke 2 byte `dst`, return `(2, FrameSID, nil)`.
+   - Jika DTX memutuskan untransmitted: return `(0, FrameUntransmitted, nil)`.
+6. `LPC2LSP` → `StabilizeLSP` → `QuantizeLSP` → L0, L1, L2, L3.
+7. `InterpolateLSP` (menggunakan quantized LSF) → 2 set LP $\hat{A}_1(z), \hat{A}_2(z)$ untuk sintesis. Hitung unquantized `PerceptualWeightCoeffs` $W(z)$ per subframe.
+8. Filter weighted speech, update `oldWsp`, jalankan `OpenLoopPitch` (3 kandidat terbaik di [20,143]).
+9. **Subframe 1:** Target signal → `ClosedLoopPitch` → P1 / P0 (parity 6 MSB) → `SearchAlgebraicA/Full` (4 pulsa) → C1/S1 → `QuantizeGain` → GA1/GB1; update `excBuf` + `synthMem`.
+10. **Subframe 2:** Target signal → `ClosedLoopPitch` (delta 5-bit relatif P1) → `SearchAlgebraicA/Full` (4 pulsa) → C2/S2 → `QuantizeGain` → GA2/GB2; update `excBuf` + `synthMem`.
+11. Geser excitation buffer: `copy(excBuf[0:154], excBuf[80:234])`.
+12. `Pack` 80 bit ke `dst[:10]`, return `(10, FrameSpeech, nil)`.
 
 ### Fase 10 — Decoder Assembly
 **File:** `decoder.go`
 
-Urutan `Decode()` per frame:
-1. `Unpack` → ParamSet; deteksi SID frame → `CNG` path
-2. `DequantizeLSP` → `InterpolateLSP` → `LSP2LPC`
-3. Per subframe: `InterpExcitation` + `BuildCodeVector` + `DequantizeGain` → excitation → `SynthesisFilter` → `PostFilter`
-4. `HighPassFilter`; clip + float32 → int16
+Urutan `Decode(dst []int16, src []byte) error` per frame:
+1. Validasi buffer output (`len(dst) >= 80`).
+2. **Deteksi Tipe Frame berdasarkan panjang byte `src`:**
+   - **Case A: `len(src) == 0` atau `src == nil` (Packet Loss / PLC):**
+     - Increment `badFrames`.
+     - Ekstrapolasi pitch lag dari `lastPitch` (dengan random jitter bila consecutive loss).
+     - Atenuasi pitch gain $g_p \leftarrow g_p \times 0.98$ dan codebook gain $g_c \leftarrow g_c \times 0.98$.
+     - Jika `badFrames > 6`, mute secara bertahap menuju 0.
+     - Sintesis eksitasi menggunakan gain teratenuasi $\to$ `SynthesisFilter` $\to$ `PostFilter`.
+   - **Case B: `len(src) == 2` (Annex B SID Frame):**
+     - Unpack 15-bit SID parameters (predictor bit, LSF stage 1 & 2, log energy).
+     - Update `cngState`, interpolasi LSF noise, bangkitkan comfort noise eksitasi pseudo-random.
+     - Sintesis $1/\hat{A}(z)$ tanpa post-filter formant keras $\to$ `HighPassFilter`.
+   - **Case C: `len(src) == 10` (Normal Speech Frame):**
+     - Reset `badFrames = 0`.
+     - `Unpack` 80 bit $\to$ `ParamSet`.
+     - Verifikasi parity bit P0 terhadap 6 MSB P1. (Jika parity mismatch $\to$ switch ke PLC concealment).
+     - `DequantizeLSP` $\to$ `StabilizeLSP` $\to$ `InterpolateLSP` $\to$ `LSP2LPC`.
+     - Per subframe (1 dan 2):
+       - `InterpExcitation` (fractional adaptive codebook delay).
+       - `BuildCodeVector` (4 pulsa dari 13 bit posisi + 4 bit tanda).
+       - `DequantizeGain` (gain pitch $g_p$ + codebook $g_c$).
+       - Rekonstruksi eksitasi total $e(n) = g_p v(n) + g_c c(n)$.
+       - `SynthesisFilter` $1/\hat{A}(z)$ dengan memori filter `synthMem`.
+       - `PostFilter` (long-term pitch + short-term formant + tilt compensation + AGC).
+   - **Case Lain:** Return `ErrInvalidFrameLength`.
+3. `HighPassFilter` output 2nd-order.
+4. Saturasi / clipping float32 ke rentang $[-32768, 32767]$ dan konversi ke `dst` int16.
 
 ### Fase 11 — Integration & CLI
 **File:** `g729_test.go`, `cmd/g729tool/main.go`
@@ -364,8 +473,15 @@ func TestBitstreamRoundTrip(t *testing.T) {
 // Verifikasi posisi bit masing-masing field tidak overlap
 func TestBitstreamFieldBoundaries(t *testing.T)
 
-// SID frame Annex B: marker bit L0=1, field 15 bit, padding 65 bit
-func TestBitstreamSIDFrame(t *testing.T)
+// SID frame Annex B: 2 byte (16 bit: 15 bit parameter + 1 bit unused pad)
+func TestBitstreamSIDFrame(t *testing.T) {
+    sid := SIDParamSet{Predictor: 1, Stage1: 25, Stage2: 12, Energy: 18}
+    buf := make([]byte, 2)
+    PackSID(buf, &sid)
+    var sid2 SIDParamSet
+    UnpackSID(&sid2, buf)
+    assert(t, sid == sid2)
+}
 ```
 
 #### `internal/dsp` — DSP Primitives
@@ -401,14 +517,25 @@ func TestAutocorrLag0Dominant(t *testing.T)
 
 #### `internal/lsp` — LSP Conversion & Quantization
 ```go
-// LPC2LSP harus menghasilkan tepat 10 root pada [0, π]
+// LPC2LSP harus menghasilkan tepat 10 root terurut naik pada [0, π] dari filter stabil
 func TestLPC2LSPRootCount(t *testing.T) {
-    a := [10]float32{0.1, -0.2, 0.15, -0.1, 0.05, -0.03, 0.02, -0.01, 0.005, -0.002}
+    // Koefisien filter LP stabil representatif (bandwidth expanded)
+    a := [10]float32{-1.25, 0.78, -0.42, 0.25, -0.15, 0.10, -0.06, 0.04, -0.02, 0.01}
     lsp, ok := LPC2LSP(&a)
     assert(t, ok, "root finding gagal")
     assert(t, len(lsp) == 10)
     for i := 1; i < 10; i++ {
         assert(t, lsp[i] > lsp[i-1], "LSP tidak terurut naik")
+    }
+}
+
+// StabilizeLSP memastikan jarak antar LSF minimal d_min = 0.005 rad
+func TestLSPStabilize(t *testing.T) {
+    // Input LSF buatan dengan jarak terlalu rapat (< 0.005)
+    lsf := [10]float32{0.20, 0.201, 0.50, 0.80, 1.10, 1.40, 1.70, 2.00, 2.30, 2.60}
+    StabilizeLSP(&lsf, 0.005)
+    for i := 1; i < 10; i++ {
+        assert(t, lsf[i]-lsf[i-1] >= 0.005, "LSF terlalu dekat")
     }
 }
 
@@ -445,11 +572,11 @@ func TestOpenLoopPitchTone300Hz(t *testing.T) {
 // Tone 100 Hz → P1 ≈ 80; menguji batas atas pitch range
 func TestOpenLoopPitchLowTone(t *testing.T)
 
-// Parity bit: XOR bit 1..7 dari P1 harus menghasilkan paritas ganjil
+// Parity bit: odd parity dari 6 bit paling signifikan (MSB) dari P1 (bit 2..7)
 func TestParityBit(t *testing.T) {
     for p1 := 0; p1 < 256; p1++ {
         p0 := ParityBit(uint8(p1))
-        popcount := bits.OnesCount8(uint8(p1)>>1) + int(p0)
+        popcount := bits.OnesCount8(uint8(p1)>>2) + int(p0)
         assert(t, popcount%2 == 1, "paritas bukan ganjil")
     }
 }
@@ -542,7 +669,7 @@ File sinyal ada di `testdata/synthetic/`.
 | Pure tone 300 Hz | Normal encode/decode | Pitch P1 ∈ [24,30]; SNR > 20 dB setelah decode |
 | Pure tone 1 kHz | Normal encode/decode | Output tidak clipping; SNR > 20 dB |
 | White noise | Encode/decode 10 frame | Encoder tidak crash; output dalam range int16 |
-| Silence (nol) | Dengan Annex B aktif | Encoder kirim SID frame (10 byte, bukan full frame) |
+| Silence (nol) | Dengan Annex B aktif | Encoder kirim SID frame (2 byte) atau untransmitted (0 byte) |
 | Full-scale clip (+32767) | Stress test | Levinson tidak diverge; encoder tidak NaN/panic |
 | Ramp signal | Stress test | Autocorr tidak Inf; LP coefficients stabil |
 | Chirp (20→4000 Hz) | Transient | Encoder/decoder tidak crash sepanjang sweep |
@@ -550,7 +677,7 @@ File sinyal ada di `testdata/synthetic/`.
 ```go
 func TestSyntheticTone300Hz(t *testing.T) {
     pcm := loadPCM("testdata/synthetic/tone_300hz.pcm")
-    enc := NewEncoder(VariantG729A)
+    enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
     dec := NewDecoder(VariantG729A)
 
     var signalE, noiseE float64
@@ -559,8 +686,9 @@ func TestSyntheticTone300Hz(t *testing.T) {
 
     for i := 0; i < len(pcm)/80; i++ {
         frame := pcm[i*80 : (i+1)*80]
-        enc.Encode(bits, frame)
-        dec.Decode(out, bits)
+        n, ft, err := enc.Encode(bits, frame)
+        assert(t, err == nil && n == 10 && ft == FrameSpeech)
+        dec.Decode(out, bits[:n])
         for j, s := range frame {
             signalE += float64(s) * float64(s)
             e := float64(out[j]) - float64(s)
@@ -881,13 +1009,13 @@ Ini memberi ruang untuk overhead jaringan, jitter buffer, dan pemrosesan lain di
 
 ```go
 func BenchmarkRTF(b *testing.B) {
-    enc   := NewEncoder(VariantG729A)
-    input := make([]int16, 80)
-    dst   := make([]byte, 10)
     b.ResetTimer()
     b.RunParallel(func(pb *testing.PB) {
+        enc   := NewEncoder(DefaultConfig())
+        input := make([]int16, 80)
+        dst   := make([]byte, 10)
         for pb.Next() {
-            enc.Encode(dst, input)
+            _, _, _ = enc.Encode(dst, input)
         }
     })
     // b.Elapsed() / b.N = ns/op; RTF = ns/op / 10_000_000 ns
@@ -913,24 +1041,24 @@ var (
 // --- Encoder ---
 
 func BenchmarkEncodeG729A(b *testing.B) {
-    enc := NewEncoder(VariantG729A)
+    enc := NewEncoder(DefaultConfig())
     dst := make([]byte, 10)
     b.ReportAllocs()
     b.SetBytes(160) // 80 sample × 2 byte input
     b.ResetTimer()
     for i := 0; i < b.N; i++ {
-        enc.Encode(dst, benchInput[i%100])
+        _, _, _ = enc.Encode(dst, benchInput[i%100])
     }
 }
 // Target: < 50 µs/op, 0 allocs/op, throughput > 3 MB/s
 
 func BenchmarkEncodeG729Full(b *testing.B) {
-    enc := NewEncoder(VariantG729)
+    enc := NewEncoder(Config{Variant: VariantG729, EnableVAD: false})
     dst := make([]byte, 10)
     b.ReportAllocs()
     b.ResetTimer()
     for i := 0; i < b.N; i++ {
-        enc.Encode(dst, benchInput[i%100])
+        _, _, _ = enc.Encode(dst, benchInput[i%100])
     }
 }
 // Target: < 80 µs/op (4-pulse search lebih berat)
@@ -1358,7 +1486,8 @@ go test -run TestPESQ -pesq=/usr/local/bin/pesq .
 | Zero allocation | Semua buffer di-pre-alloc di struct encoder/decoder; validasi dengan `go test -benchmem` |
 | Fixed-size array params | `*[40]float32` bukan `[]float32` di hot path untuk BCE (bounds-check elimination) |
 | Φ matrix reuse | Hitung satu kali per subframe, pakai untuk semua kandidat pulse position |
-| excBuf shift | `copy(excBuf[0:145], excBuf[40:185])` setelah tiap frame, hindari modulo index |
+| excBuf shift | `copy(excBuf[0:154], excBuf[80:234])` setelah tiap frame (80 sample), hindari modulo index |
+| speechBuf shift | `copy(speechBuf[0:160], speechBuf[80:240])` setelah tiap frame untuk jendela analisis 240 sampel + lookahead |
 | math32 pattern | Cast eksplisit `float32(math.Sqrt(float64(x)))` — hanya 2× per frame di gain normalization |
 | Tabel di data segment | Semua table = `var` array literal (bukan `init()`), thread-safe otomatis, no lock |
 
