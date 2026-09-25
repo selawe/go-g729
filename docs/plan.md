@@ -742,37 +742,438 @@ Golden file diupdate dengan: `go test -run TestGolden -update-golden`
 
 ---
 
-### Layer 7 — Performance Benchmarks (Gate Non-Fungsional)
+### Layer 7 — Performance Benchmarks & Profiling
+
+**File:** `bench_test.go` (terpisah dari `g729_test.go` agar tidak lambatkan `go test ./...`)
+
+---
+
+#### 7a. Metrik Utama: Real-Time Factor (RTF)
+
+RTF adalah metrik terpenting untuk codec real-time:
+
+```
+RTF = waktu_proses / durasi_audio
+    = T_encode / 10 ms
+
+RTF < 1.0  → real-time capable
+RTF < 0.01 → 100× headroom (target kita)
+```
+
+Pada G.729A, frame = 10 ms audio. Target encode < 100 µs → RTF = 0.01 (100× headroom).
+Ini memberi ruang untuk overhead jaringan, jitter buffer, dan pemrosesan lain di stack VoIP.
 
 ```go
-func BenchmarkEncodeG729A(b *testing.B) {
+func BenchmarkRTF(b *testing.B) {
     enc   := NewEncoder(VariantG729A)
     input := make([]int16, 80)
     dst   := make([]byte, 10)
-    b.ReportAllocs()
     b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        enc.Encode(dst, input)
-    }
-    // Target: < 50 µs/frame; 0 allocs/op
+    b.RunParallel(func(pb *testing.PB) {
+        for pb.Next() {
+            enc.Encode(dst, input)
+        }
+    })
+    // b.Elapsed() / b.N = ns/op; RTF = ns/op / 10_000_000 ns
+    nsPerOp := float64(b.Elapsed().Nanoseconds()) / float64(b.N)
+    rtf := nsPerOp / 10_000_000 // 10ms = 10,000,000 ns
+    b.ReportMetric(rtf, "RTF")
+    b.ReportMetric(nsPerOp/1000, "µs/frame")
 }
-
-func BenchmarkDecodeG729A(b *testing.B) {
-    dec   := NewDecoder(VariantG729A)
-    frame := validFrame // 10 byte dari ITU test vectors
-    dst   := make([]int16, 80)
-    b.ReportAllocs()
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        dec.Decode(dst, frame)
-    }
-    // Target: < 30 µs/frame; 0 allocs/op
-}
-
-func BenchmarkEncodeG729Full(b *testing.B) { ... }  // Target: < 80 µs/frame
 ```
 
-Jalankan: `go test -bench=. -benchmem -benchtime=5s`
+---
+
+#### 7b. End-to-End Benchmarks
+
+```go
+// bench_test.go
+
+var (
+    benchInput = makeSpeechFrames(100) // 100 frame pre-generated dari speech.in
+    benchFrame = loadValidFrame()      // 1 frame valid dari algthm.bit
+)
+
+// --- Encoder ---
+
+func BenchmarkEncodeG729A(b *testing.B) {
+    enc := NewEncoder(VariantG729A)
+    dst := make([]byte, 10)
+    b.ReportAllocs()
+    b.SetBytes(160) // 80 sample × 2 byte input
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        enc.Encode(dst, benchInput[i%100])
+    }
+}
+// Target: < 50 µs/op, 0 allocs/op, throughput > 3 MB/s
+
+func BenchmarkEncodeG729Full(b *testing.B) {
+    enc := NewEncoder(VariantG729)
+    dst := make([]byte, 10)
+    b.ReportAllocs()
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        enc.Encode(dst, benchInput[i%100])
+    }
+}
+// Target: < 80 µs/op (4-pulse search lebih berat)
+
+// --- Decoder ---
+
+func BenchmarkDecodeG729A(b *testing.B) {
+    dec := NewDecoder(VariantG729A)
+    dst := make([]int16, 80)
+    b.ReportAllocs()
+    b.SetBytes(10) // 10 byte input
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        dec.Decode(dst, benchFrame)
+    }
+}
+// Target: < 30 µs/op, 0 allocs/op
+
+// --- Reset overhead ---
+
+func BenchmarkReset(b *testing.B) {
+    enc := NewEncoder(VariantG729A)
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        enc.Reset()
+    }
+}
+// Reset harus O(1) — hanya zeroing struct fields
+```
+
+---
+
+#### 7c. Micro-Benchmarks per Komponen DSP
+
+Setiap komponen diukur secara independen untuk mengidentifikasi bottleneck.
+**File:** `internal/dsp/bench_test.go`, `internal/codebook/bench_test.go`, dst.
+
+```go
+// --- DSP ---
+
+func BenchmarkAutocorr(b *testing.B) {
+    speech := make([]float32, 240)
+    r      := make([]float32, 11)
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        Autocorr(r, speech, tables.Window240, 10)
+    }
+}
+// Operasi: 240×11 = 2640 multiply-add; target < 2 µs
+
+func BenchmarkLevinson(b *testing.B) {
+    r := [11]float32{1, 0.9, 0.81, 0.729, 0.656, 0.59, 0.531, 0.478, 0.430, 0.387, 0.349}
+    a := [10]float32{}
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        LevinsonInPlace(&a, r[:], 10)
+    }
+}
+// 10 iterasi × 10 inner ops = 100 ops; target < 500 ns
+
+func BenchmarkSynthesisFilter(b *testing.B) {
+    excitation := [40]float32{}
+    a          := [10]float32{}
+    mem        := [10]float32{}
+    out        := [40]float32{}
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        SynthesisFilter(out[:], excitation[:], &a, &mem)
+    }
+}
+// 40×10 = 400 multiply-add; target < 1 µs
+
+func BenchmarkConvolution(b *testing.B) {
+    h   := [40]float32{}
+    x   := [40]float32{}
+    out := [40]float32{}
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        Convolution(out[:], h[:], x[:])
+    }
+}
+// 40×40/2 = 800 multiply-add (triangular); target < 2 µs
+
+// --- LSP ---
+
+func BenchmarkLPC2LSP(b *testing.B) {
+    a := [10]float32{0.1,-0.2,0.15,-0.1,0.05,-0.03,0.02,-0.01,0.005,-0.002}
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        LPC2LSP(&a)
+    }
+}
+// 60-pt grid + bisection; target < 5 µs
+
+func BenchmarkQuantizeLSP(b *testing.B) {
+    // VQ search 128 + 32 + 32 entries
+    // target < 3 µs
+}
+
+// --- Pitch ---
+
+func BenchmarkOpenLoopPitch(b *testing.B) {
+    residual := make([]float32, 240)
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        OpenLoopPitch(residual)
+    }
+}
+// Search 124 lags × 240 ops = 29760 ops; target < 15 µs
+
+func BenchmarkClosedLoopPitch(b *testing.B) {
+    target  := [40]float32{}
+    impulse := [40]float32{}
+    excBuf  := make([]float32, 185)
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        ClosedLoopPitch(target[:], impulse[:], excBuf, 60, nil, nil)
+    }
+}
+// ±3 integer atau ±1 frac search; target < 8 µs
+
+// --- Codebook (bottleneck utama encoder) ---
+
+func BenchmarkSearchAlgebraicA(b *testing.B) {
+    target  := [40]float32{}
+    impulse := [40]float32{}
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        SearchAlgebraicA(target[:], impulse[:], nil, nil)
+    }
+}
+// 2-pulse: 17×17 = 289 kandidat × inner ops; target < 20 µs
+
+func BenchmarkSearchAlgebraicFull(b *testing.B) {
+    // 4-pulse: jauh lebih berat; target < 60 µs
+}
+
+func BenchmarkBuildPhiMatrix(b *testing.B) {
+    h   := [40]float32{}
+    phi := [40][40]float32{}
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        buildPhiMatrix(&phi, h[:])
+    }
+}
+// 40×40/2 = 800 ops; dihitung sekali per subframe
+```
+
+**Tabel target per komponen:**
+
+| Komponen | Target | Persentase dari 50 µs budget |
+|---|---|---|
+| `Autocorr` | < 2 µs | 4% |
+| `Levinson` | < 0.5 µs | 1% |
+| `LPC2LSP` | < 5 µs | 10% |
+| `QuantizeLSP` | < 3 µs | 6% |
+| `OpenLoopPitch` | < 15 µs | 30% |
+| `ClosedLoopPitch` (×2 subfr) | < 8 µs | 16% |
+| `SearchAlgebraicA` (×2 subfr) | < 20 µs | 40% |
+| `QuantizeGain` (×2 subfr) | < 1 µs | 2% |
+| Filter + pack/unpack | < 1 µs | 2% |
+| **Total G.729A** | **< 50 µs** | 100% |
+
+---
+
+#### 7d. Concurrency Benchmark
+
+Mengukur throughput saat N goroutine encode/decode secara paralel (tiap goroutine punya instance sendiri).
+
+```go
+func BenchmarkConcurrentEncode(b *testing.B) {
+    for _, n := range []int{1, 2, 4, 8, 16} {
+        b.Run(fmt.Sprintf("goroutines=%d", n), func(b *testing.B) {
+            b.SetParallelism(n)
+            b.RunParallel(func(pb *testing.PB) {
+                enc := NewEncoder(VariantG729A) // satu enc per goroutine
+                dst := make([]byte, 10)
+                inp := make([]int16, 80)
+                for pb.Next() {
+                    enc.Encode(dst, inp)
+                }
+            })
+        })
+    }
+}
+// Ekspektasi: throughput mendekati linear dengan jumlah goroutine
+// (tidak ada shared state antar instance)
+```
+
+---
+
+#### 7e. Memory Footprint Benchmark
+
+```go
+func BenchmarkMemoryFootprint(b *testing.B) {
+    b.ReportAllocs()
+    for i := 0; i < b.N; i++ {
+        enc := NewEncoder(VariantG729A)
+        dec := NewDecoder(VariantG729A)
+        _ = enc
+        _ = dec
+    }
+}
+// NewEncoder/NewDecoder boleh alloc (konstruktor), tapi hanya 1 alloc per instance
+// Ukuran encoder struct target: < 8 KB (masuk L1 cache)
+
+func TestEncoderStructSize(t *testing.T) {
+    enc := &encoder{}
+    size := unsafe.Sizeof(*enc)
+    t.Logf("encoder struct size: %d bytes", size)
+    if size > 8192 {
+        t.Errorf("encoder terlalu besar: %d bytes (want < 8192)", size)
+    }
+}
+```
+
+---
+
+#### 7f. CPU Profiling Workflow
+
+Gunakan `pprof` untuk mengidentifikasi fungsi bottleneck setelah implementasi selesai.
+
+```bash
+# 1. Generate CPU profile
+go test -bench=BenchmarkEncodeG729A -benchtime=10s \
+    -cpuprofile=cpu.prof ./...
+
+# 2. Analisis interaktif
+go tool pprof cpu.prof
+(pprof) top10          # 10 fungsi terberat
+(pprof) list SearchAlgebraicA  # line-by-line breakdown
+(pprof) web            # buka flame graph di browser
+
+# 3. Generate flame graph (butuh graphviz)
+go tool pprof -pdf cpu.prof > flame.pdf
+```
+
+**Ekspektasi hot path** berdasarkan algoritma:
+```
+SearchAlgebraicA / SearchAlgebraicFull   ~40-50% CPU
+OpenLoopPitch                            ~20-25% CPU
+Autocorr + Levinson                      ~10% CPU
+ClosedLoopPitch                          ~10-15% CPU
+Sisanya (LSP, filter, gain, pack)        ~10% CPU
+```
+
+Jika profil tidak sesuai ekspektasi ini, ada implementasi yang perlu dioptimasi.
+
+---
+
+#### 7g. Memory Profiling
+
+```bash
+# Generate heap profile saat encoding 1000 frame
+go test -bench=BenchmarkEncodeG729A -benchtime=1000x \
+    -memprofile=mem.prof ./...
+
+go tool pprof mem.prof
+(pprof) top            # alokasi terbesar
+(pprof) list Encode    # harus 0 allocs di Encode()
+```
+
+Target: `0 allocs/op` pada `Encode()` dan `Decode()`. Setiap alloc yang muncul adalah bug.
+
+---
+
+#### 7h. Regression Benchmark dengan `benchstat`
+
+Gunakan `benchstat` untuk membandingkan performa sebelum dan sesudah perubahan kode.
+
+```bash
+# Install benchstat
+go install golang.org/x/perf/cmd/benchstat@latest
+
+# Sebelum refactor: simpan baseline
+go test -bench=. -benchmem -count=10 ./... > before.txt
+
+# Setelah refactor: ukur lagi
+go test -bench=. -benchmem -count=10 ./... > after.txt
+
+# Bandingkan: tampilkan delta statistik
+benchstat before.txt after.txt
+```
+
+Output contoh:
+```
+name               old time/op    new time/op    delta
+EncodeG729A-8        48.2µs ± 2%    31.5µs ± 1%  -34.6%  (p=0.000 n=10+10)
+DecodeG729A-8        28.7µs ± 3%    27.1µs ± 2%   -5.6%  (p=0.003 n=10+10)
+SearchAlgebraicA-8   19.8µs ± 1%    12.3µs ± 2%  -37.9%  (p=0.000 n=10+10)
+
+name               old allocs/op  new allocs/op  delta
+EncodeG729A-8          0.00           0.00         ~     (all equal)
+```
+
+`benchstat` menggunakan Mann-Whitney U-test untuk memastikan delta signifikan secara statistik (`-count=10` minimum untuk hasil valid).
+
+---
+
+#### 7i. Benchmark Gate di CI
+
+Tambahkan benchmark gate ke CI pipeline agar regresi performa terdeteksi otomatis:
+
+```yaml
+# .github/workflows/bench.yml
+- name: Run benchmarks
+  run: |
+    go test -bench=. -benchmem -count=5 ./... > bench_result.txt
+    
+- name: Check performance gate
+  run: |
+    # Parse ns/op dari output benchmark, assert < threshold
+    go run ./cmd/benchcheck \
+      --file=bench_result.txt \
+      --gate="BenchmarkEncodeG729A=50000"  \  # 50000 ns = 50 µs
+      --gate="BenchmarkDecodeG729A=30000"  \
+      --gate="BenchmarkSearchAlgebraicA=20000"
+```
+
+`cmd/benchcheck` adalah tool kecil dalam repo yang mem-parse output `go test -bench` dan exit non-zero jika ada gate yang terlampaui.
+
+---
+
+#### 7j. Platform-Specific Targets
+
+| Platform | Encode G.729A | Decode G.729A | Catatan |
+|---|---|---|---|
+| amd64 (modern) | < 50 µs | < 30 µs | Target utama |
+| ARM64 (Apple M-series) | < 60 µs | < 35 µs | Float32 NEON efficient |
+| ARM64 (server, Graviton) | < 80 µs | < 45 µs | |
+| WASM (browser) | < 200 µs | < 100 µs | Acceptable untuk WebRTC |
+
+Test lintas platform menggunakan `GOARCH=arm64 GOOS=linux go test -bench=.` atau GitHub Actions matrix.
+
+---
+
+#### Ringkasan Perintah Benchmark
+
+```bash
+# End-to-end benchmark + alokasi
+go test -bench=. -benchmem -benchtime=5s ./...
+
+# Benchmark spesifik dengan count statistik
+go test -bench=BenchmarkEncodeG729A -count=10 -benchmem . > result.txt
+
+# CPU profiling
+go test -bench=BenchmarkEncodeG729A -cpuprofile=cpu.prof .
+go tool pprof -http=:6060 cpu.prof
+
+# Memory profiling
+go test -bench=BenchmarkEncodeG729A -memprofile=mem.prof .
+go tool pprof -http=:6060 mem.prof
+
+# Bandingkan dua versi
+benchstat before.txt after.txt
+
+# RTF report
+go test -bench=BenchmarkRTF -v . | grep RTF
+```
 
 ---
 
@@ -790,18 +1191,36 @@ Jalankan: `go test -bench=. -benchmem -benchtime=5s`
 | Fase 9-10 (Assembly) | Synthetic signal tests, SNR round-trip | Wajib lulus |
 | Fase 11 (Integration) | **ITU-T Compliance (Layer 3)** — bit-exact + ±1 LSB | **Hard gate** |
 | Post-compliance | PESQ ≥ 3.7, Fuzz 5 menit, Golden file snapshot | Wajib lulus |
-| Pre-release | Benchmark gate: < 50 µs encode, 0 allocs | Wajib lulus |
+| Pre-release | Benchmark gate: RTF < 0.01, 0 allocs/op; `benchstat` vs. baseline | Wajib lulus |
 
-### Perintah Lengkap Testing
+### Perintah Lengkap Testing & Benchmarking
+
 ```bash
-# Unit + compliance
+# Unit + compliance (semua paket)
 go test ./...
 
 # Dengan race detector
 go test -race ./...
 
-# Benchmark + alokasi
+# Benchmark end-to-end + alokasi
 go test -bench=. -benchmem -benchtime=5s ./...
+
+# Benchmark spesifik dengan sampling statistik (butuh benchstat)
+go test -bench=BenchmarkEncodeG729A -count=10 -benchmem . > result.txt
+
+# Bandingkan dua versi (regresi performa)
+benchstat before.txt after.txt
+
+# CPU profiling → flame graph
+go test -bench=BenchmarkEncodeG729A -cpuprofile=cpu.prof .
+go tool pprof -http=:6060 cpu.prof
+
+# Memory profiling → validasi zero-alloc
+go test -bench=BenchmarkEncodeG729A -memprofile=mem.prof .
+go tool pprof -http=:6060 mem.prof
+
+# RTF report
+go test -bench=BenchmarkRTF -v . | grep -E "RTF|µs/frame"
 
 # Fuzz decoder (CI: 1 menit; local: 5 menit+)
 go test -fuzz=FuzzDecode -fuzztime=1m .
