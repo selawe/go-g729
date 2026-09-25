@@ -4,9 +4,14 @@
 
 Membangun G.729 speech codec dari nol dalam pure Go di direktori `go-g729`.
 G.729 adalah standar ITU-T CS-ACELP yang banyak dipakai di VoIP (SIP/RTP).
-Project ini mendukung **G.729A** (Annex A, 2-pulse) dan **G.729 Full** (4-pulse) secara bersamaan
+Project ini mendukung **G.729A** (Annex A, fast-search) dan **G.729 Full** (full nested search) secara bersamaan
 dengan shared abstraction dari awal, menggunakan **float32** untuk aritmetika internal,
 dan menyertakan **Annex B** (VAD/DTX/CNG).
+
+> **Catatan penting:** G.729 dan G.729A **100% kompatibel bitstream**. Keduanya menggunakan
+> codebook inovasi **4 pulsa** (17 bit: 13 bit posisi + 4 bit tanda), satu pulsa per track.
+> Perbedaan G.729A bukan pada jumlah pulsa, melainkan **algoritma pencarian** yang lebih cepat:
+> `D4i40_17_fast` (pair-wise heuristic dengan threshold korelasi Dₙ), bukan 4-loop nested penuh.
 
 Karakteristik teknis codec:
 - Sampling rate: 8 kHz
@@ -20,8 +25,8 @@ Karakteristik teknis codec:
 
 | Aspek | Keputusan |
 |---|---|
-| Variant | G.729A + G.729 Full — shared abstraction dari awal |
-| Arithmetic | `float32` (performa optimal di amd64/ARM64, ±1 LSB toleransi vs. referensi ITU-T) |
+| Variant | G.729A (fast heuristic search) + G.729 Full (nested search) — bitstream identik, shared codebook 4-pulse |
+| Arithmetic | `float32` — performa optimal di amd64/ARM64; **tidak** bit-exact vs. fixed-point ITU-T vectors (lihat catatan compliance encoder di bawah) |
 | Annex B | Termasuk VAD/DTX/CNG dalam desain |
 | Alokasi | Zero-alloc di hot path (semua buffer pre-allocated di struct) |
 | Thread safety | Per-instance; caller buat satu Encoder/Decoder per goroutine |
@@ -85,9 +90,9 @@ go-g729/
 │   │   └── parity.go               # Odd-parity bit P0 = XOR(bit 1..7 of P1)
 │   │
 │   ├── codebook/
-│   │   ├── algebraic.go            # BuildCodeVector — shared G.729A dan G.729 Full
-│   │   ├── algebraic_a.go          # SearchAlgebraicA — 2-pulse ACELP (G.729A)
-│   │   ├── algebraic_full.go       # SearchAlgebraicFull — 4-pulse ACELP (G.729)
+│   │   ├── algebraic.go            # BuildCodeVector + struktur track — shared G.729A dan G.729 Full
+│   │   ├── algebraic_a.go          # SearchAlgebraicA — 4-pulse, fast pair-wise heuristic (G.729A, D4i40_17_fast)
+│   │   ├── algebraic_full.go       # SearchAlgebraicFull — 4-pulse, full 4-loop nested search (G.729)
 │   │   └── gain.go                 # QuantizeGain / DequantizeGain (GA 3-bit + GB 4-bit)
 │   │
 │   ├── filter/
@@ -263,11 +268,22 @@ Test: LPC→LSP→LPC round-trip error < 1e-5; quantize→dequantize match ITU r
 ### Fase 5 — Algebraic Codebook (paralel dengan Fase 4)
 **File:** `internal/codebook/algebraic*.go`
 
-- `BuildCodeVector` — shared: posisi + tanda → 40-sample excitation vector
-- `SearchAlgebraicA` — 2-pulse: precompute backward-filtered target + correlation matrix Φ[i][j]; iterate track 0 dan track 1
-- `SearchAlgebraicFull` — 4-pulse: same Φ matrix, depth-first search 4 tracks
+**Struktur 4 track codebook (sama untuk G.729A dan G.729 Full):**
+```
+Track 0: posisi {0, 5,10,15,20,25,30,35}         → 3 bit (8 posisi)
+Track 1: posisi {1, 6,11,16,21,26,31,36}         → 3 bit (8 posisi)
+Track 2: posisi {2, 7,12,17,22,27,32,37}         → 3 bit (8 posisi)
+Track 3: posisi {3, 8,13,18,23,28,33,38,
+                 4, 9,14,19,24,29,34,39}          → 4 bit (16 posisi)
+Sign per track:  s0 s1 s2 s3                       → 4 bit
+Total per subframe: 13 bit posisi + 4 bit tanda = 17 bit ✓ (sesuai ParamSet C1/S1)
+```
 
-Optimisasi kunci: hitung Φ[i][j] = Σ h[n-i]·h[n-j] sekali per subframe, reuse untuk semua kombinasi posisi.
+- `BuildCodeVector` — shared: 17-bit index → 4 posisi + 4 tanda → 40-sample excitation vector
+- `SearchAlgebraicA` — **4 pulsa**, fast pair-wise heuristic (`D4i40_17_fast`): cari track (0,1) dan track (2,3) secara berpasangan, gunakan threshold korelasi Dₙ untuk pruning; precompute Φ[i][j]
+- `SearchAlgebraicFull` — **4 pulsa**, 4-loop nested exhaustive search: iterasi semua kombinasi (8×8×8×16 = 8192) dengan Φ matrix reuse
+
+Optimisasi kunci (berlaku keduanya): hitung Φ[i][j] = Σ h[n-i]·h[n-j] sekali per subframe, reuse untuk semua kombinasi posisi.
 
 ### Fase 6 — Gain Quantization
 **File:** `internal/codebook/gain.go`
@@ -452,12 +468,29 @@ func TestCodebookSearchImprovement(t *testing.T) {
     assert(t, WMSE(target, h, cv) < WMSE(target, h, zeros40))
 }
 
-// Setiap indeks valid harus menghasilkan vektor dengan jumlah non-zero yang benar
+// Setiap indeks valid harus menghasilkan vektor dengan tepat 4 non-zero sample
+// G.729A dan G.729 Full menggunakan bitstream format yang identik: 4 pulsa, 1 per track
 func TestCodeVectorPulseCount(t *testing.T) {
-    for idx := uint16(0); idx < 512; idx++ {
-        cv := BuildCodeVector(idx, 0xF, VariantG729A)
+    for i0 := 0; i0 < 8; i0++ {      // track 0: 8 posisi
+    for i1 := 0; i1 < 8; i1++ {      // track 1: 8 posisi
+    for i2 := 0; i2 < 8; i2++ {      // track 2: 8 posisi
+    for i3 := 0; i3 < 16; i3++ {     // track 3: 16 posisi
+        idx := packIndex(i0, i1, i2, i3) // 13 bit
+        cv  := BuildCodeVector(idx, 0xF) // 4-bit sign = all positive
         nonzero := countNonZero(cv[:])
-        assert(t, nonzero == 2, "G.729A harus 2 pulsa")
+        assert(t, nonzero == 4, "harus tepat 4 pulsa, got %d (idx=%013b)", nonzero, idx)
+    }}}}
+}
+
+// Verifikasi posisi track tidak overlap (constraint penting)
+func TestCodeVectorTracksNoOverlap(t *testing.T) {
+    for _, idx := range sampleIndices {
+        pos := extractPositions(BuildCodeVector(idx, 0xF))
+        // Track 0: pos mod 5 == 0 (kecuali track 3 yang mencakup mod 5 == 3 dan 4)
+        assertTrack0(t, pos[0]) // ∈ {0,5,10,...35}
+        assertTrack1(t, pos[1]) // ∈ {1,6,11,...36}
+        assertTrack2(t, pos[2]) // ∈ {2,7,12,...37}
+        assertTrack3(t, pos[3]) // ∈ {3,8,...38, 4,9,...39}
     }
 }
 
@@ -547,29 +580,111 @@ func TestSyntheticTone300Hz(t *testing.T) {
 
 **File:** `g729_test.go`
 
-Ini adalah uji kebenaran paling kritis. Codec dinyatakan valid hanya jika lulus semua compliance test.
+> **Penting — Implikasi float32 pada encoder compliance:**
+> Test vector resmi ITU-T (`speech.in` → `algthm.bit`) digenerate oleh encoder **fixed-point**
+> (menggunakan `basic_op.c`, saturasi integer, tabel lookup fixed-point).
+> Encoder float32 — bahkan implementasi referensi resmi G.729 **Annex C** (floating-point) — **tidak
+> pernah menghasilkan bitstream bit-exact** terhadap `algthm.bit`. Perbedaan pembulatan float pada
+> pitch search atau codebook pulse selection akan memilih indeks berbeda di satu frame, yang
+> kemudian mendivergensikan seluruh filter memory frame berikutnya.
+>
+> Konsekuensi:
+> - **Decoder:** Bisa dan harus diuji bit-exact (±1 LSB) terhadap `algthm.bit` → `speech.ref`,
+>   karena decoder hanya merekonstruksi dari bitstream yang diberikan.
+> - **Encoder float32:** Gate compliance bukan bit-exact, melainkan **kualitas objektif**:
+>   PESQ MOS-LQO ≥ 3.8, segmental SNR ≥ 20 dB, dan spectral distortion LSP < 1 dB.
+>   Atau, gunakan output encoder **G.729 Annex C** (floating-point reference binary) sebagai
+>   referensi komparasi pengganti `algthm.bit`.
 
-#### 3a. Encoder Bit-Exact Test
+#### 3a. Encoder Quality Compliance (menggantikan bit-exact yang tidak mungkin dicapai float32)
+
 ```go
-func TestITUEncoderBitExact(t *testing.T) {
+// TestEncoderRoundTripQuality memvalidasi kualitas encoder float32 secara objektif.
+// Tidak menggunakan bytes.Equal terhadap algthm.bit (yang digenerate fixed-point).
+func TestEncoderRoundTripQuality(t *testing.T) {
     pcm := readPCM16("testdata/itu/speech.in")
-    ref := readBitstream("testdata/itu/algthm.bit") // [][]byte, 10 byte/frame
     enc := NewEncoder(VariantG729A)
+    dec := NewDecoder(VariantG729A)
 
-    for i, refFrame := range ref {
-        got := make([]byte, 10)
-        if err := enc.Encode(got, pcm[i*80:(i+1)*80]); err != nil {
-            t.Fatalf("frame %d: encode error: %v", i, err)
+    var sigE, noiseE float64
+    var segSNRSum float64
+    segCount := 0
+    bits := make([]byte, 10)
+    out  := make([]int16, 80)
+
+    for i := 0; i < len(pcm)/80; i++ {
+        frame := pcm[i*80 : (i+1)*80]
+        enc.Encode(bits, frame)
+        dec.Decode(out, bits)
+
+        var fSig, fNoise float64
+        for j, s := range frame {
+            fSig   += float64(s) * float64(s)
+            e      := float64(out[j]) - float64(s)
+            fNoise += e * e
+            sigE   += float64(s) * float64(s)
+            noiseE += e * e
         }
-        if !bytes.Equal(got, refFrame) {
-            t.Errorf("frame %d:\n  got  %x\n  want %x", i, got, refFrame)
+        if fSig > 0 {
+            segSNRSum += 10 * math.Log10(fSig/fNoise)
+            segCount++
         }
     }
+
+    overallSNR := 10 * math.Log10(sigE / noiseE)
+    segSNR     := segSNRSum / float64(segCount)
+
+    t.Logf("Overall SNR:    %.2f dB (want >= 25)", overallSNR)
+    t.Logf("Segmental SNR:  %.2f dB (want >= 20)", segSNR)
+
+    if overallSNR < 25.0 {
+        t.Errorf("overall SNR terlalu rendah: %.2f dB", overallSNR)
+    }
+    if segSNR < 20.0 {
+        t.Errorf("segmental SNR terlalu rendah: %.2f dB", segSNR)
+    }
+}
+
+// TestEncoderSpectralDistortion memvalidasi distorsi LSP quantization < 1 dB.
+// Spectral distortion = rata-rata selisih log spectral antara LP original dan quantized.
+func TestEncoderSpectralDistortion(t *testing.T) {
+    pcm    := readPCM16("testdata/itu/speech.in")
+    enc    := newEncoderInternal(VariantG729A) // akses internal untuk inspeksi LSP
+
+    var sdSum float64
+    count := 0
+    for i := 0; i < len(pcm)/80; i++ {
+        lspOrig, lspQuant := enc.encodeFrameWithLSP(pcm[i*80:(i+1)*80])
+        sd := spectralDistortion(lspOrig, lspQuant) // dB
+        sdSum += sd
+        count++
+    }
+    avgSD := sdSum / float64(count)
+    t.Logf("Average spectral distortion: %.3f dB (want < 1.0)", avgSD)
+    if avgSD >= 1.0 {
+        t.Errorf("spectral distortion terlalu tinggi: %.3f dB", avgSD)
+    }
+}
+
+// TestEncoderVsAnnexCReference membandingkan encoder float32 kita terhadap
+// output binary referensi G.729 Annex C (floating-point), bukan algthm.bit.
+// Dijalankan hanya jika binary Annex C tersedia.
+func TestEncoderVsAnnexCReference(t *testing.T) {
+    if annexCBin == "" {
+        t.Skip("G.729 Annex C binary tidak tersedia; set -annexc=/path/to/coder")
+    }
+    // Jalankan binary Annex C pada speech.in → annexc.bit
+    // Bandingkan output kita terhadap annexc.bit (bisa bit-exact atau ±frame-level)
+    // Karena keduanya float, kemungkinan match jauh lebih tinggi dari algthm.bit
 }
 ```
 
-#### 3b. Decoder ±1 LSB Test
+#### 3b. Decoder ±1 LSB Test (tetap berlaku — decoder bisa diuji bit-exact)
+
 ```go
+// TestITUDecoderPlusMinusOneLSB: decoder harus merekonstruksi output ±1 LSB
+// dari speech.ref ketika diberi algthm.bit sebagai input.
+// Ini valid karena decoder tidak bergantung pada algoritma encoder (fixed vs. float).
 func TestITUDecoderPlusMinusOneLSB(t *testing.T) {
     frames := readBitstream("testdata/itu/algthm.bit")
     ref    := readPCM16("testdata/itu/speech.ref")
@@ -592,7 +707,7 @@ func TestITUDecoderPlusMinusOneLSB(t *testing.T) {
 }
 ```
 
-#### 3c. Tame Frame Test
+#### 3c. Tame Frame Test (decoder)
 ```go
 // Tame frame = excitation nol; menguji decoder pada kondisi degenerate
 func TestITUTameFrames(t *testing.T) {
@@ -605,8 +720,9 @@ func TestITUTameFrames(t *testing.T) {
 
 #### 3d. G.729 Full Compliance
 ```go
-// Sama seperti 3a dan 3b tapi dengan VariantG729 dan test vector G.729 Full
-func TestITUEncoderFullBitExact(t *testing.T)
+// Encoder Full: quality gate sama (SNR ≥ 25 dB, segSNR ≥ 20 dB)
+func TestEncoderFullRoundTripQuality(t *testing.T)
+// Decoder Full: bit-exact ±1 LSB terhadap referensi decoder G.729 Full
 func TestITUDecoderFullPlusMinusOneLSB(t *testing.T)
 ```
 
@@ -946,7 +1062,8 @@ func BenchmarkSearchAlgebraicA(b *testing.B) {
         SearchAlgebraicA(target[:], impulse[:], nil, nil)
     }
 }
-// 2-pulse: 17×17 = 289 kandidat × inner ops; target < 20 µs
+// G.729A fast heuristic: 4 pulsa, pair-wise search (8×8 + 8×16) dengan Dₙ pruning
+// Jauh lebih cepat dari 8×8×8×16=8192 kombinasi exhaustive; target < 20 µs
 
 func BenchmarkSearchAlgebraicFull(b *testing.B) {
     // 4-pulse: jauh lebih berat; target < 60 µs
@@ -1189,8 +1306,8 @@ go test -bench=BenchmarkRTF -v . | grep RTF
 | Fase 6 (Gain) | `TestGainQuantize*` | Wajib lulus |
 | Fase 7-8 (Filter+VAD) | `TestPostFilter*`, `TestVAD*`, `TestDTX*` | Wajib lulus |
 | Fase 9-10 (Assembly) | Synthetic signal tests, SNR round-trip | Wajib lulus |
-| Fase 11 (Integration) | **ITU-T Compliance (Layer 3)** — bit-exact + ±1 LSB | **Hard gate** |
-| Post-compliance | PESQ ≥ 3.7, Fuzz 5 menit, Golden file snapshot | Wajib lulus |
+| Fase 11 (Integration) | **ITU-T Compliance (Layer 3):** decoder ±1 LSB (bit-exact) + encoder SNR/PESQ/spectral distortion | **Hard gate** |
+| Post-compliance | PESQ MOS-LQO ≥ 3.8, Fuzz 5 menit, Golden file snapshot | Wajib lulus |
 | Pre-release | Benchmark gate: RTF < 0.01, 0 allocs/op; `benchstat` vs. baseline | Wajib lulus |
 
 ### Perintah Lengkap Testing & Benchmarking
