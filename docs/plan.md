@@ -88,6 +88,7 @@ go-g729/
 ├── encoder.go                      # encoder struct + Encode()
 ├── decoder.go                      # decoder struct + Decode()
 ├── g729_test.go                    # ITU-T compliance tests
+├── bench_test.go                   # Performance benchmarks & RTF profiling
 │
 ├── internal/
 │   ├── params/
