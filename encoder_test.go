@@ -253,6 +253,34 @@ func TestEncoderStats(t *testing.T) {
 	}
 }
 
+func TestEncodeBatch(t *testing.T) {
+	enc := NewEncoder(ProfileFast())
+
+	// 2 frames (160 samples = 20 ms)
+	src20ms := generateSine(1000.0, 160, 8000.0)
+	dst := make([]byte, 20)
+
+	n, ftypes, err := enc.EncodeBatch(dst, src20ms)
+	if err != nil {
+		t.Fatalf("EncodeBatch 20ms: %v", err)
+	}
+	if n != 20 || len(ftypes) != 2 || ftypes[0] != FrameSpeech || ftypes[1] != FrameSpeech {
+		t.Errorf("unexpected batch result: n=%d types=%v", n, ftypes)
+	}
+
+	// Invalid input length (e.g. 100 samples)
+	_, _, err = enc.EncodeBatch(dst, make([]int16, 100))
+	if err == nil {
+		t.Fatal("expected error for non-multiple of 80 samples, got nil")
+	}
+
+	// Buffer too small
+	_, _, err = enc.EncodeBatch(make([]byte, 10), src20ms)
+	if err != ErrInvalidOutputLen {
+		t.Fatalf("expected ErrInvalidOutputLen, got %v", err)
+	}
+}
+
 func BenchmarkEncodeG729A(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Variant = VariantG729A

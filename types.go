@@ -159,6 +159,13 @@ type Encoder interface {
 	//   - err: nil on success, or an error if buffer lengths are invalid
 	Encode(dst []byte, src []int16) (n int, frameType FrameType, err error)
 
+	// EncodeBatch encodes multiple consecutive 10 ms speech frames (multiples of 80 int16 samples,
+	// e.g. 160 samples for 20 ms, 320 samples for 40 ms) sequentially into dst.
+	//
+	// dst must have capacity of at least (len(src)/80)*10 bytes.
+	// Returns total bytes written, a slice of FrameType for each encoded frame, or an error.
+	EncodeBatch(dst []byte, src []int16) (n int, frameTypes []FrameType, err error)
+
 	// Stats returns cumulative operational telemetry for this encoder.
 	Stats() EncoderStats
 
@@ -177,6 +184,10 @@ type Decoder interface {
 	//
 	// Returns nil on success, or an error if dst or src lengths are invalid.
 	Decode(dst []int16, src []byte) error
+
+	// DecodeBatch decompresses multiple G.729 bitstream frames sequentially into dst.
+	// dst must have capacity of at least len(frames)*80 samples.
+	DecodeBatch(dst []int16, frames [][]byte) error
 
 	// Stats returns cumulative operational and PLC telemetry for this decoder.
 	Stats() DecoderStats

@@ -332,6 +332,24 @@ func TestDecoderStats(t *testing.T) {
 	}
 }
 
+func TestDecodeBatch(t *testing.T) {
+	dec := NewDecoder()
+	f1 := make([]byte, 10)
+	f2 := make([]byte, 10)
+	dst := make([]int16, 160)
+
+	err := dec.DecodeBatch(dst, [][]byte{f1, f2})
+	if err != nil {
+		t.Fatalf("DecodeBatch failed: %v", err)
+	}
+
+	// Buffer too small
+	err = dec.DecodeBatch(make([]int16, 100), [][]byte{f1, f2})
+	if err != ErrInvalidOutputLen {
+		t.Fatalf("expected ErrInvalidOutputLen, got %v", err)
+	}
+}
+
 func BenchmarkDecodeSpeech(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.EnableVAD = false

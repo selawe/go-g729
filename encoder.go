@@ -1,6 +1,7 @@
 package g729
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
@@ -594,6 +595,33 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 // Stats returns cumulative operational telemetry for this encoder.
 func (e *encoder) Stats() EncoderStats {
 	return e.stats
+}
+
+// EncodeBatch encodes multiple consecutive 10 ms speech frames (multiples of 80 int16 samples) into dst.
+func (e *encoder) EncodeBatch(dst []byte, src []int16) (int, []FrameType, error) {
+	if len(src)%params.L_FRAME != 0 || len(src) == 0 {
+		return 0, nil, errors.New("g729: src length must be a non-zero multiple of 80 samples")
+	}
+	numFrames := len(src) / params.L_FRAME
+	if len(dst) < numFrames*params.BYTES_PER_FRAME {
+		return 0, nil, ErrInvalidOutputLen
+	}
+
+	frameTypes := make([]FrameType, numFrames)
+	totalBytes := 0
+
+	for i := 0; i < numFrames; i++ {
+		frameSrc := src[i*params.L_FRAME : (i+1)*params.L_FRAME]
+		frameDst := dst[totalBytes:]
+		fn, ft, err := e.Encode(frameDst, frameSrc)
+		if err != nil {
+			return totalBytes, frameTypes[:i], err
+		}
+		frameTypes[i] = ft
+		totalBytes += fn
+	}
+
+	return totalBytes, frameTypes, nil
 }
 
 // invokeDiagnostic calls the optional OnDiagnostic callback, recovering from any panic.

@@ -466,3 +466,16 @@ func (d *decoder) Stats() DecoderStats {
 	d.stats.LastBFICount = d.badFrames
 	return d.stats
 }
+
+// DecodeBatch decompresses multiple G.729 bitstream frames sequentially into dst.
+func (d *decoder) DecodeBatch(dst []int16, frames [][]byte) error {
+	if len(dst) < len(frames)*params.L_FRAME {
+		return ErrInvalidOutputLen
+	}
+	for i, f := range frames {
+		if err := d.Decode(dst[i*params.L_FRAME:(i+1)*params.L_FRAME], f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
