@@ -1,0 +1,10 @@
+# Mark binary test fixtures so git does not attempt text diffs or line-ending
+# conversion on them. These files are committed intentionally as regression
+# anchors for the encoder/decoder golden file tests.
+testdata/golden/*.bit binary
+testdata/golden/*.pcm binary
+
+# ITU-T reference test vectors (if present locally; not committed to repo)
+testdata/itu/*.bit binary
+testdata/itu/*.pcm binary
+testdata/itu/*.in  binary

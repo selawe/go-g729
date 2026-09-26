@@ -155,11 +155,12 @@ func TestEndToEndOfficialSpeechVector(t *testing.T) {
 		overallSNR, segSNR := computeSNR(pcm, decoded)
 		t.Logf("G.729A Round-Trip: Overall SNR = %.2f dB, Segmental SNR = %.2f dB (%d frames)", overallSNR, segSNR, totalFrames)
 
-		// Verify output signal is non-empty and well-behaved
-		for i, s := range decoded {
-			if s > 32767 || s < -32768 {
-				t.Fatalf("sample %d clipped: %d", i, s)
-			}
+		// SNR gate: float32 implementation must be within 2.5 dB of reference (5.99 dB on TEST.IN).
+		// This threshold accounts for float32 vs fixed-point rounding differences while still
+		// catching genuine encoder regressions.
+		const minG729ASNR = 3.5
+		if overallSNR < minG729ASNR {
+			t.Errorf("G.729A round-trip SNR too low: %.2f dB (min %.1f dB) — encoder regression?", overallSNR, minG729ASNR)
 		}
 	})
 
@@ -193,10 +194,9 @@ func TestEndToEndOfficialSpeechVector(t *testing.T) {
 		overallSNR, segSNR := computeSNR(pcm[:framesToTest*80], decoded)
 		t.Logf("Full G.729 Round-Trip: Overall SNR = %.2f dB, Segmental SNR = %.2f dB (%d frames)", overallSNR, segSNR, framesToTest)
 
-		for i, s := range decoded {
-			if s > 32767 || s < -32768 {
-				t.Fatalf("sample %d clipped: %d", i, s)
-			}
+		const minG729FullSNR = 3.5
+		if overallSNR < minG729FullSNR {
+			t.Errorf("G.729 Full round-trip SNR too low: %.2f dB (min %.1f dB)", overallSNR, minG729FullSNR)
 		}
 	})
 }
@@ -206,9 +206,12 @@ func TestSyntheticSignalRoundTrip(t *testing.T) {
 		name   string
 		freqHz float64
 		amp    float64
+		minSNR float64
 	}{
-		{"Tone300Hz", 300.0, 10000.0},
-		{"Tone1000Hz", 1000.0, 8000.0},
+		// 300 Hz: period ~27 samples, well within pitch range → high SNR expected
+		{"Tone300Hz", 300.0, 10000.0, 15.0},
+		// 1000 Hz: period 8 samples < PIT_MIN=20 → no pitch exploitation → lower SNR
+		{"Tone1000Hz", 1000.0, 8000.0, 5.0},
 	}
 
 	for _, tc := range tones {
@@ -235,8 +238,12 @@ func TestSyntheticSignalRoundTrip(t *testing.T) {
 			overallSNR, segSNR := computeSNR(pcm, decoded)
 			t.Logf("%s Round-Trip SNR: Overall = %.2f dB, Segmental = %.2f dB", tc.name, overallSNR, segSNR)
 
-			if overallSNR < 5.0 {
-				t.Errorf("%s overall SNR too low: %.2f dB", tc.name, overallSNR)
+			// Voiced speech (300 Hz) should achieve high SNR since G.729A
+			// exploits pitch periodicity. Unvoiced / high-freq (1000 Hz, period 8
+			// samples < PIT_MIN=20) relies on code excitation only — lower SNR
+			// is expected and acceptable.
+			if overallSNR < tc.minSNR {
+				t.Errorf("%s overall SNR too low: %.2f dB (min %.1f dB)", tc.name, overallSNR, tc.minSNR)
 			}
 		})
 	}
