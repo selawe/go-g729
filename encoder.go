@@ -151,17 +151,23 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 
 	// 2. High-pass filter new speech samples into speech buffer
 	newSpeech := e.oldSpeech[params.L_TOTAL-params.L_FRAME : params.L_TOTAL]
-	clippedCount := 0
 	for i := 0; i < params.L_FRAME; i++ {
-		s := src[i]
-		if s == 32767 || s <= -32768 {
-			clippedCount++
-		}
-		newSpeech[i] = float32(s)
+		newSpeech[i] = float32(src[i])
 	}
 
+	// clippedCount counts samples that entered the SoftClip compression zone (|x| >= 28000).
+	// This threshold matches the SoftClip knee so the metric reflects what was actually
+	// processed, regardless of whether EnableClipRepair is on or off.
+	clippedCount := 0
 	if e.cfg.EnableClipRepair {
-		dsp.SoftClip(newSpeech, 28000.0, 32760.0)
+		clippedCount = dsp.SoftClip(newSpeech, 28000.0, 32760.0)
+	} else {
+		const softClipThreshold = float32(28000)
+		for _, s := range newSpeech {
+			if s >= softClipThreshold || s <= -softClipThreshold {
+				clippedCount++
+			}
+		}
 	}
 
 	dsp.HighPassFilter(newSpeech, &e.hpfState)
@@ -229,16 +235,6 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 			copy(e.oldExc[:params.L_PAST_EXC], e.oldExc[params.L_FRAME:params.L_FRAME+params.L_PAST_EXC])
 
 			if e.cfg.OnDiagnostic != nil {
-				var zc float32
-				dtemp := speech[0]
-				for i := 1; i < params.L_FRAME; i++ {
-					if dtemp*speech[i] < 0.0 {
-						zc += 1.0
-					}
-					dtemp = speech[i]
-				}
-				zc /= 80.0
-
 				ft := FrameUntransmitted
 				if sid.Transmitted {
 					ft = FrameSID
@@ -247,8 +243,8 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 					FrameIndex:   e.frameCount,
 					FrameType:    ft,
 					EnergyDB:     energyDB,
-					ZeroCrossing: zc,
-					VADMarker:    vad.Noise,
+					ZeroCrossing: zeroCrossingRate(speech),
+					VADMarker:    marker, // use marker variable, not hardcoded vad.Noise
 					ClippedCount: clippedCount,
 				})
 			}
@@ -560,21 +556,11 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	bits.Pack(dst[:params.BYTES_PER_FRAME], &e.paramSet)
 
 	if e.cfg.OnDiagnostic != nil {
-		var zc float32
-		dtemp := speech[0]
-		for i := 1; i < params.L_FRAME; i++ {
-			if dtemp*speech[i] < 0.0 {
-				zc += 1.0
-			}
-			dtemp = speech[i]
-		}
-		zc /= 80.0
-
 		e.cfg.OnDiagnostic(DiagnosticStats{
 			FrameIndex:   e.frameCount,
 			FrameType:    FrameSpeech,
 			EnergyDB:     energyDB,
-			ZeroCrossing: zc,
+			ZeroCrossing: zeroCrossingRate(speech),
 			VADMarker:    marker,
 			PitchLag:     tOp,
 			GainPitch:    subfrGainPit,
@@ -584,4 +570,21 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	}
 
 	return params.BYTES_PER_FRAME, FrameSpeech, nil
+}
+
+// zeroCrossingRate returns the normalised zero-crossing rate of a speech frame
+// in [0, 1]. Shared by both the SID/DTX and active speech diagnostic paths.
+func zeroCrossingRate(speech []float32) float32 {
+	if len(speech) < 2 {
+		return 0
+	}
+	var zc float32
+	prev := speech[0]
+	for _, s := range speech[1:] {
+		if prev*s < 0 {
+			zc++
+		}
+		prev = s
+	}
+	return zc / float32(len(speech))
 }

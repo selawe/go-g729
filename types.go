@@ -70,6 +70,12 @@ func ProfileCore() Config {
 
 // ProfileQuality returns the full-complexity ITU-T G.729 configuration with nested ACELP search
 // and harmonic weighting for maximum audio fidelity and SNR.
+//
+// VAD is intentionally disabled (CBR mode) because this profile targets scenarios such as
+// recording, transcoding, and quality benchmarking where every frame must be encoded at full
+// quality. DTX silence transitions can introduce spectral discontinuities that defeat A/B
+// comparisons. To combine G.729 Full quality with Annex B efficiency, override after
+// construction: cfg := ProfileQuality(); cfg.EnableVAD = true.
 func ProfileQuality() Config {
 	return Config{
 		Variant:   VariantG729,
