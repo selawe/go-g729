@@ -222,6 +222,30 @@ func TestJitterBufferConcurrency(t *testing.T) {
 	}
 }
 
+func TestLargeMultiFramePacket(t *testing.T) {
+	// 8-frame (80 ms) bundled packet — must not be rejected as too-large.
+	jb := jitter.New(jitter.Config{TargetDelay: 20 * time.Millisecond})
+
+	payload := make([]byte, 80)
+	for i := 0; i < 8; i++ {
+		payload[i*10] = byte(0xA0 + i)
+	}
+	if err := jb.Push(50, 4000, payload); err != nil {
+		t.Fatalf("Push 80-byte payload: %v", err)
+	}
+
+	jb.Flush()
+	for i := 0; i < 8; i++ {
+		f, ok := jb.Pop()
+		if !ok || f == nil {
+			t.Fatalf("frame %d missing (ok=%v)", i, ok)
+		}
+		if f[0] != byte(0xA0+i) {
+			t.Errorf("frame %d tag = %#x, want %#x", i, f[0], 0xA0+i)
+		}
+	}
+}
+
 func TestMaxDelayEnforcement(t *testing.T) {
 	// MaxDelay = 30ms → 3 slots ahead of playout is the limit.
 	jb := jitter.New(jitter.Config{

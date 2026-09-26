@@ -81,8 +81,11 @@ type Buffer struct {
 	slots [MaxSlotCount]frameSlot
 	stats Stats
 
-	unpackBuf [4][10]byte
-	dstSlices [4][]byte
+	// unpackBuf sized for the largest realistic RTP payload: 8 frames = 80 ms.
+	// Common packetization intervals are 10, 20, 30, 40 ms (1-4 frames), but
+	// some legacy PBX gateways bundle up to 80 ms.
+	unpackBuf [8][10]byte
+	dstSlices [8][]byte
 }
 
 // New creates a new jitter buffer with the given configuration.
