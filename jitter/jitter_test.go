@@ -299,6 +299,26 @@ func TestPopIntoBoundsCheck(t *testing.T) {
 	}
 }
 
+func TestDroppedByWrap(t *testing.T) {
+	jb := jitter.New(jitter.Config{TargetDelay: 50 * time.Millisecond})
+	payload := make([]byte, 10)
+
+	// Push packet 0
+	if err := jb.Push(0, 0, payload); err != nil {
+		t.Fatalf("push 0: %v", err)
+	}
+
+	// Push packet 128 during buffering (which maps to slot 0: 128 & 127 == 0)
+	if err := jb.Push(128, 128*80, payload); err != nil {
+		t.Fatalf("push 128: %v", err)
+	}
+
+	st := jb.Stats()
+	if st.DroppedByWrap != 1 {
+		t.Errorf("expected DroppedByWrap=1, got %d", st.DroppedByWrap)
+	}
+}
+
 func BenchmarkJitterBufferPushPop(b *testing.B) {
 	jb := jitter.New(jitter.Config{TargetDelay: 10 * time.Millisecond})
 	payload := make([]byte, 10)

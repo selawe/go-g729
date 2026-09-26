@@ -26,6 +26,7 @@ const (
 
 	// MaxSlotCount is the size of the ring buffer (must be power of 2 for fast modular arithmetic).
 	MaxSlotCount = 128
+	slotMask     = MaxSlotCount - 1
 )
 
 // Sentinel errors.
@@ -54,6 +55,7 @@ type Stats struct {
 	EmittedPLC      int // Loss concealment (nil) frames emitted
 	LatePackets     int // Packets discarded because they arrived after playout
 	DupPackets      int // Duplicate packets discarded
+	DroppedByWrap   int // Slots overwritten due to ring buffer wraparound
 	Underflows      int // Playout buffer starvation occurrences
 	CurrentBuffered int // Current number of frames queued
 }
@@ -177,12 +179,15 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 	// Slot each frame contained in this packet
 	for i := 0; i < nFrames; i++ {
 		slotSeq := seq + uint16(i)
-		slotIdx := int(slotSeq % MaxSlotCount)
+		slotIdx := int(slotSeq & slotMask)
 		slot := &b.slots[slotIdx]
 
-		if slot.valid && slot.seq == slotSeq {
-			b.stats.DupPackets++
-			continue
+		if slot.valid {
+			if slot.seq == slotSeq {
+				b.stats.DupPackets++
+				continue
+			}
+			b.stats.DroppedByWrap++
 		}
 
 		slot.seq = slotSeq
@@ -222,7 +227,7 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 
 	bufferedCount := 0
 	for i := 0; i < MaxSlotCount; i++ {
-		slotIdx := int((b.playoutSeq + uint16(i)) % MaxSlotCount)
+		slotIdx := int((b.playoutSeq + uint16(i)) & slotMask)
 		if b.slots[slotIdx].valid && b.slots[slotIdx].seq == b.playoutSeq+uint16(i) {
 			bufferedCount++
 		}
@@ -248,7 +253,7 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 		return 0, false, false
 	}
 
-	slotIdx := int(b.playoutSeq % MaxSlotCount)
+	slotIdx := int(b.playoutSeq & slotMask)
 	slot := &b.slots[slotIdx]
 
 	if slot.valid && slot.seq == b.playoutSeq {
