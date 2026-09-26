@@ -29,7 +29,7 @@ func InitLSPMA(freqPrev *[params.MA_NP][params.M]float32) {
 //   - lspQ: quantized LSP vector in cosine domain
 func QuantizeLSP(lsp [params.M]float32, freqPrev *[params.MA_NP][params.M]float32) (l0, l1, l2, l3 int, lspQ [params.M]float32) {
 	lsf := LSP2LSF(lsp)
-	wegt := computeLSFWeights(lsf)
+	wegt := ComputeLSFWeights(lsf)
 
 	var (
 		cand    [2]int
@@ -166,7 +166,8 @@ func QuantizeLSP(lsp [params.M]float32, freqPrev *[params.MA_NP][params.M]float3
 	return l0, l1, l2, l3, lspQ
 }
 
-func computeLSFWeights(lsf [params.M]float32) (wegt [params.M]float32) {
+// ComputeLSFWeights computes the perceptual weighting factors for LSF distance calculation.
+func ComputeLSFWeights(lsf [params.M]float32) (wegt [params.M]float32) {
 	const (
 		pi04    = float32(math.Pi * 0.04)
 		pi92    = float32(math.Pi * 0.92)

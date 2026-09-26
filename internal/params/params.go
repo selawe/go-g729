@@ -92,10 +92,25 @@ const (
 	INV_COEF   = float32(-0.032623) // Inverse determinant factor for gain preselection
 	GPCLIP2    = float32(0.94)   // Pitch gain clip during taming
 	GP0999     = float32(0.9999) // Pitch gain threshold during taming
-	THRESH_ERR = float32(60000.0)// Error threshold for taming
+	THRESH_ERR = float32(60000.0) // Error threshold for taming
 
 	// Annex B VAD / DTX / CNG constants.
-	HANG_COUNT = 8  // DTX hangover frames before entering inactive state
-	SID_FREQ   = 8  // SID frame repetition interval during silence
-	SEED_INIT  = 21845 // Initial pseudo-random seed for CNG excitation
+	NP         = 12              // Increased LPC order for Annex B VAD autocorrelation
+	MP1        = M + 1           // LPC order plus 1 (11)
+	HANG_COUNT = 8               // DTX hangover frames before entering inactive state
+	SID_FREQ   = 8               // SID frame repetition interval during silence
+	SEED_INIT  = 21845           // Initial pseudo-random seed for CNG excitation
+	INIT_SEED  = int16(11111)    // Standard ITU-T Annex B random seed
+	FR_SID_MIN = 3               // Minimum frames between SID updates
+	NB_SUMACF  = 3               // Number of accumulated autocorrelation blocks
+	NB_CURACF  = 2               // Number of current autocorrelation blocks
+	NB_GAIN    = 2               // Number of energies tracked for SID gain
+	THRESH1    = float32(1.1481628)
+	THRESH2    = float32(1.0966466)
+	A_GAIN0    = float32(0.875)
+	A_GAIN1    = float32(1.0 - 0.875)
+	MIN_ENER   = float32(0.1588489319) // -8 dB in linear domain
+	NORM_GAUSS = float32(3.16227766)   // sqrt(40) * 0.5
+	K0         = float32(3.0)          // 4 * (1 - alpha^2) with alpha = 0.5
+	G_MAX      = float32(5000.0)
 )
