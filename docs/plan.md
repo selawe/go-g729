@@ -591,7 +591,7 @@ func TestSincInterpolationAccuracy(t *testing.T)
 func TestCodebookSearchImprovement(t *testing.T) {
     target, h := generateRandomTargetAndImpulse(40)
     idx, signs := SearchAlgebraicA(target, h)
-    cv := BuildCodeVector(idx, signs, VariantG729A)
+    cv := BuildCodeVector(idx, signs) // tidak perlu Variant: format 4-pulse identik untuk G.729A dan Full
     assert(t, WMSE(target, h, cv) < WMSE(target, h, zeros40))
 }
 
@@ -731,7 +731,7 @@ func TestSyntheticTone300Hz(t *testing.T) {
 // Tidak menggunakan bytes.Equal terhadap algthm.bit (yang digenerate fixed-point).
 func TestEncoderRoundTripQuality(t *testing.T) {
     pcm := readPCM16("testdata/itu/speech.in")
-    enc := NewEncoder(VariantG729A)
+    enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false}) // VAD off: selalu hasilkan speech frame 10 byte
     dec := NewDecoder(VariantG729A)
 
     var sigE, noiseE float64
@@ -742,8 +742,8 @@ func TestEncoderRoundTripQuality(t *testing.T) {
 
     for i := 0; i < len(pcm)/80; i++ {
         frame := pcm[i*80 : (i+1)*80]
-        enc.Encode(bits, frame)
-        dec.Decode(out, bits)
+        n, _, _ := enc.Encode(bits, frame) // EnableVAD=false: n selalu 10
+        dec.Decode(out, bits[:n])
 
         var fSig, fNoise float64
         for j, s := range frame {
@@ -864,7 +864,7 @@ Setelah compliance lulus, ukur kualitas perseptual secara objektif.
 ```go
 func TestRoundTripSNR(t *testing.T) {
     pcm := readPCM16("testdata/itu/speech.in")
-    enc := NewEncoder(VariantG729A)
+    enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
     dec := NewDecoder(VariantG729A)
 
     var sigE, noiseE float64
@@ -873,8 +873,8 @@ func TestRoundTripSNR(t *testing.T) {
 
     for i := 0; i < len(pcm)/80; i++ {
         frame := pcm[i*80 : (i+1)*80]
-        enc.Encode(bits, frame)
-        dec.Decode(out, bits)
+        n, _, _ := enc.Encode(bits, frame)
+        dec.Decode(out, bits[:n])
         for j, s := range frame {
             sigE   += float64(s) * float64(s)
             e      := float64(out[j]) - float64(s)
@@ -916,18 +916,19 @@ Decoder harus tahan semua input arbitrer — tidak boleh panic, crash, atau loop
 ```go
 // go test -fuzz=FuzzDecode -fuzztime=5m
 func FuzzDecode(f *testing.F) {
-    // Seed corpus: frame valid dari ITU test vectors
+    // Seed corpus: frame valid speech (10b), SID (2b), dan PLC (0b)
+    f.Add([]byte{})
+    f.Add([]byte{0x00, 0x00})
     for _, frame := range readBitstream("testdata/itu/algthm.bit")[:10] {
         f.Add(frame)
     }
 
     f.Fuzz(func(t *testing.T, data []byte) {
-        if len(data) < 10 { return }
         dec := NewDecoder(VariantG729A)
         out := make([]int16, 80)
 
-        // Tidak boleh panic apapun input-nya
-        _ = dec.Decode(out, data[:10])
+        // Tidak boleh panic apapun input-nya (len 0 PLC, len 2 SID, len 10 speech, atau corrupted length)
+        _ = dec.Decode(out, data)
 
         // Output harus dalam range int16 yang valid
         for _, s := range out {
@@ -944,9 +945,9 @@ func FuzzEncode(f *testing.F) {
         if len(data) < 160 { return } // 80 sample × 2 byte
         pcm := make([]int16, 80)
         for i := range pcm { pcm[i] = int16(binary.LittleEndian.Uint16(data[i*2:])) }
-        enc := NewEncoder(VariantG729A)
+        enc := NewEncoder(DefaultConfig())
         dst := make([]byte, 10)
-        _ = enc.Encode(dst, pcm)
+        _, _, _ = enc.Encode(dst, pcm)
     })
 }
 ```
@@ -962,13 +963,13 @@ var updateGolden = flag.Bool("update-golden", false, "regenerasi golden files")
 
 func TestGoldenEncoderG729A(t *testing.T) {
     pcm := readPCM16("testdata/itu/speech.in")
-    enc := NewEncoder(VariantG729A)
+    enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
 
     var got []byte
     bits := make([]byte, 10)
     for i := 0; i < len(pcm)/80; i++ {
-        enc.Encode(bits, pcm[i*80:(i+1)*80])
-        got = append(got, bits...)
+        n, _, _ := enc.Encode(bits, pcm[i*80:(i+1)*80])
+        got = append(got, bits[:n]...)
     }
 
     if *updateGolden {
@@ -1080,7 +1081,7 @@ func BenchmarkDecodeG729A(b *testing.B) {
 // --- Reset overhead ---
 
 func BenchmarkReset(b *testing.B) {
-    enc := NewEncoder(VariantG729A)
+    enc := NewEncoder(DefaultConfig())
     b.ResetTimer()
     for i := 0; i < b.N; i++ {
         enc.Reset()
@@ -1235,11 +1236,11 @@ func BenchmarkConcurrentEncode(b *testing.B) {
         b.Run(fmt.Sprintf("goroutines=%d", n), func(b *testing.B) {
             b.SetParallelism(n)
             b.RunParallel(func(pb *testing.PB) {
-                enc := NewEncoder(VariantG729A) // satu enc per goroutine
+                enc := NewEncoder(DefaultConfig()) // satu enc per goroutine
                 dst := make([]byte, 10)
                 inp := make([]int16, 80)
                 for pb.Next() {
-                    enc.Encode(dst, inp)
+                    _, _, _ = enc.Encode(dst, inp)
                 }
             })
         })
@@ -1257,7 +1258,7 @@ func BenchmarkConcurrentEncode(b *testing.B) {
 func BenchmarkMemoryFootprint(b *testing.B) {
     b.ReportAllocs()
     for i := 0; i < b.N; i++ {
-        enc := NewEncoder(VariantG729A)
+        enc := NewEncoder(DefaultConfig())
         dec := NewDecoder(VariantG729A)
         _ = enc
         _ = dec
