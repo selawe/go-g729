@@ -1,0 +1,243 @@
+package sdp_test
+
+import (
+	"strings"
+	"testing"
+
+	g729 "github.com/selawe/go-g729"
+	"github.com/selawe/go-g729/sdp"
+)
+
+func TestFMTPLine(t *testing.T) {
+	cases := []struct {
+		cfg  g729.Config
+		want string
+	}{
+		{g729.Config{EnableVAD: true}, "a=fmtp:18 annexb=yes"},
+		{g729.Config{EnableVAD: false}, "a=fmtp:18 annexb=no"},
+	}
+	for _, c := range cases {
+		got := sdp.FMTPLine(sdp.DefaultPayloadType, c.cfg)
+		if got != c.want {
+			t.Errorf("FMTPLine(%v) = %q, want %q", c.cfg.EnableVAD, got, c.want)
+		}
+	}
+}
+
+func TestRTPMapLine(t *testing.T) {
+	got := sdp.RTPMapLine(18)
+	if got != "a=rtpmap:18 G729/8000" {
+		t.Errorf("RTPMapLine = %q", got)
+	}
+}
+
+func TestMediaSection(t *testing.T) {
+	cfg := g729.Config{EnableVAD: true}
+	section := sdp.MediaSection(8000, 18, cfg)
+	lines := strings.Split(section, "\r\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %q", len(lines), section)
+	}
+	if lines[0] != "m=audio 8000 RTP/AVP 18" {
+		t.Errorf("line 0: %q", lines[0])
+	}
+	if lines[1] != "a=rtpmap:18 G729/8000" {
+		t.Errorf("line 1: %q", lines[1])
+	}
+	if lines[2] != "a=fmtp:18 annexb=yes" {
+		t.Errorf("line 2: %q", lines[2])
+	}
+}
+
+func TestParseFMTP(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantVAD bool
+		wantErr bool
+	}{
+		// Standard values
+		{"annexb=yes", true, false},
+		{"annexb=no", false, false},
+		{"annexb=1", true, false},
+		{"annexb=0", false, false},
+		// Case insensitive
+		{"annexb=YES", true, false},
+		{"annexb=No", false, false},
+		// Whitespace tolerance
+		{" annexb=yes ", true, false},
+		{"annexb = yes", true, false},
+		// Empty → default (true)
+		{"", true, false},
+		{"   ", true, false},
+		// Semi-colon separated (future extensions)
+		{"annexb=yes;unknown=foo", true, false},
+		{"annexb=no;unknown=bar", false, false},
+		// Invalid value
+		{"annexb=maybe", false, true},
+	}
+	for _, c := range cases {
+		got, err := sdp.ParseFMTP(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ParseFMTP(%q): expected error", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseFMTP(%q): unexpected error: %v", c.in, err)
+			continue
+		}
+		if got != c.wantVAD {
+			t.Errorf("ParseFMTP(%q) = %v, want %v", c.in, got, c.wantVAD)
+		}
+	}
+}
+
+func TestParseFMTPLine(t *testing.T) {
+	cases := []struct {
+		line string
+		pt   int
+		want bool
+	}{
+		{"a=fmtp:18 annexb=yes", 18, true},
+		{"a=fmtp:18 annexb=no", 18, false},
+		// Without "a=fmtp:" prefix
+		{"18 annexb=yes", 18, true},
+		// Without payload type prefix (pt=0)
+		{"annexb=no", 0, false},
+		// Full line, zero pt → strip any leading number
+		{"18 annexb=yes", 0, true},
+	}
+	for _, c := range cases {
+		got, err := sdp.ParseFMTPLine(c.line, c.pt)
+		if err != nil {
+			t.Errorf("ParseFMTPLine(%q, %d): %v", c.line, c.pt, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("ParseFMTPLine(%q, %d) = %v, want %v", c.line, c.pt, got, c.want)
+		}
+	}
+}
+
+func TestConfigFromFMTP(t *testing.T) {
+	cfg, err := sdp.ConfigFromFMTP("annexb=yes")
+	if err != nil {
+		t.Fatalf("ConfigFromFMTP: %v", err)
+	}
+	if !cfg.EnableVAD {
+		t.Error("expected EnableVAD=true for annexb=yes")
+	}
+	if cfg.Variant != g729.VariantG729A {
+		t.Errorf("expected VariantG729A, got %v", cfg.Variant)
+	}
+
+	cfg2, err := sdp.ConfigFromFMTP("annexb=no")
+	if err != nil {
+		t.Fatalf("ConfigFromFMTP(no): %v", err)
+	}
+	if cfg2.EnableVAD {
+		t.Error("expected EnableVAD=false for annexb=no")
+	}
+}
+
+func TestNegotiateAnnexB(t *testing.T) {
+	cases := []struct {
+		offer, answer string
+		want          bool
+	}{
+		// Both yes → yes
+		{"annexb=yes", "annexb=yes", true},
+		// One side says no → no
+		{"annexb=yes", "annexb=no", false},
+		{"annexb=no", "annexb=yes", false},
+		// Both no → no
+		{"annexb=no", "annexb=no", false},
+		// Absent fmtp → default (yes)
+		{"", "", true},
+		{"", "annexb=no", false},
+		{"annexb=yes", "", true},
+	}
+	for _, c := range cases {
+		got, err := sdp.NegotiateAnnexB(c.offer, c.answer)
+		if err != nil {
+			t.Errorf("NegotiateAnnexB(%q, %q): %v", c.offer, c.answer, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("NegotiateAnnexB(%q, %q) = %v, want %v", c.offer, c.answer, got, c.want)
+		}
+	}
+}
+
+func TestConfigFromNegotiation(t *testing.T) {
+	cfg, err := sdp.ConfigFromNegotiation("annexb=yes", "annexb=yes")
+	if err != nil || !cfg.EnableVAD {
+		t.Errorf("yes+yes: got err=%v vad=%v", err, cfg.EnableVAD)
+	}
+
+	cfg, err = sdp.ConfigFromNegotiation("annexb=yes", "annexb=no")
+	if err != nil || cfg.EnableVAD {
+		t.Errorf("yes+no: got err=%v vad=%v", err, cfg.EnableVAD)
+	}
+}
+
+// TestFMTPRoundTrip verifies FMTPLine → ParseFMTP → Config round-trip
+func TestFMTPRoundTrip(t *testing.T) {
+	for _, enableVAD := range []bool{true, false} {
+		origCfg := g729.Config{Variant: g729.VariantG729A, EnableVAD: enableVAD}
+		line := sdp.FMTPLine(18, origCfg)
+
+		annexb, err := sdp.ParseFMTPLine(line, 18)
+		if err != nil {
+			t.Fatalf("ParseFMTPLine(%q): %v", line, err)
+		}
+		if annexb != enableVAD {
+			t.Errorf("round-trip failed: EnableVAD %v → FMTPLine → ParseFMTP → %v", enableVAD, annexb)
+		}
+	}
+}
+
+// TestSDPEncoderIntegration verifies Config derived from SDP produces correct
+// encoder behavior: annexb=yes → SID frames appear during silence.
+func TestSDPEncoderIntegration(t *testing.T) {
+	cfg, err := sdp.ConfigFromFMTP("annexb=yes")
+	if err != nil {
+		t.Fatalf("ConfigFromFMTP: %v", err)
+	}
+
+	enc := g729.NewEncoder(cfg)
+	silence := make([]int16, 80)
+	dst := make([]byte, 10)
+
+	// Feed silence until DTX kicks in
+	var gotSID bool
+	for i := 0; i < 50 && !gotSID; i++ {
+		n, ft, err := enc.Encode(dst, silence)
+		if err != nil {
+			t.Fatalf("frame %d encode: %v", i, err)
+		}
+		if ft == g729.FrameSID && n == 2 {
+			gotSID = true
+		}
+		if ft == g729.FrameUntransmitted && n == 0 {
+			gotSID = true // DTX suppressed → Annex B is working
+		}
+	}
+	if !gotSID {
+		t.Error("annexb=yes: expected SID or suppressed frame during 50 silence frames, got only speech")
+	}
+
+	// annexb=no → only speech frames, even during silence
+	cfgNO, _ := sdp.ConfigFromFMTP("annexb=no")
+	encNO := g729.NewEncoder(cfgNO)
+	for i := 0; i < 50; i++ {
+		n, ft, err := encNO.Encode(dst, silence)
+		if err != nil {
+			t.Fatalf("no-annexb frame %d: %v", i, err)
+		}
+		if ft != g729.FrameSpeech || n != 10 {
+			t.Errorf("annexb=no frame %d: got ft=%v n=%d, want FrameSpeech 10 bytes", i, ft, n)
+		}
+	}
+}
