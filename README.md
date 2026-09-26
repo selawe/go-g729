@@ -18,7 +18,9 @@ Implementasi **ITU-T G.729** speech codec dalam pure Go — mencakup **G.729 Ann
 - **Decoder:** **9 µs/frame, 1054× real-time** — diverifikasi **SNR > 20 dB** terhadap `TEST.pst` resmi ITU-T.
 - **Annex B lengkap:** VAD (energi + zero-crossing + spectral tilt + noise tracking), DTX (SID frame 2-byte per RFC 3551), CNG (Gaussian pseudo-random excitation + pitch + ACELP).
 - **Packet Loss Concealment (PLC):** Ekstrapolasi pitch, pelemahan gain bertahap, muting setelah 6+ frame beruntun hilang.
-- **RTP packetization** (RFC 3551) dan **SDP annexb negotiation** (RFC 4566) tersedia sebagai package terpisah.
+- **Multiple Encoder Profiles:** `ProfileCore`, `ProfileQuality`, `ProfileFast`, `ProfileClipRepair` (soft-knee declipping saturation protection), dan `ProfileDiagnostic` (per-frame DSP telemetry).
+- **Streaming I/O (`io.Writer` & `io.Reader`):** `g729.NewWriter` dan `g729.NewReader` untuk memproses aliran byte audio arbitrer secara kontinu.
+- **RTP packetization** (RFC 3551) dan **SDP annexb negotiation** (RFC 4566) tersedia sebagai package terpisah dengan uji black-box peer interop.
 
 > Lihat [`docs/performance.md`](docs/performance.md) untuk angka benchmark lengkap beserta metodologi dan estimasi kapasitas.
 
@@ -28,10 +30,11 @@ Implementasi **ITU-T G.729** speech codec dalam pure Go — mencakup **G.729 Ann
 
 ```
 go-g729/
-├── types.go            # Interface publik: Encoder, Decoder, Config, FrameType, sentinel errors
+├── types.go            # Interface publik: Encoder, Decoder, Config, Profiles, sentinel errors
 ├── encoder.go          # Pipeline encoder G.729 / G.729A / Annex B
 ├── decoder.go          # Pipeline decoder, PLC, CNG
-├── rtp/                # Packetization G.729 per RFC 3551 (Pack, Unpack, TimestampForFrame)
+├── stream.go           # Streaming I/O adapters: Writer (io.WriteCloser) & Reader (io.Reader)
+├── rtp/                # Packetization G.729 per RFC 3551 (Pack, Unpack, Peer Interop Tests)
 ├── sdp/                # SDP annexb helpers per RFC 4566 (FMTPLine, ParseFMTP, NegotiateAnnexB)
 ├── cmd/
 │   ├── g729tool/       # CLI encode/decode file WAV/PCM
@@ -139,6 +142,49 @@ dec.Decode(pcm, frame2bytes)
 dec.Decode(pcm, nil)
 ```
 
+### Profil Encoder
+
+Tersedia 5 preset profil encoder untuk berbagai kebutuhan:
+
+```go
+// 1. Core: Standar VoIP (G.729A + VAD/DTX Annex B aktif)
+enc := g729.NewEncoder(g729.ProfileCore())
+
+// 2. Quality: Fidelitas maksimal (Full G.729 nested search, CBR 8 kbps)
+enc := g729.NewEncoder(g729.ProfileQuality())
+
+// 3. Fast: Throughput maksimal (G.729A CBR 8 kbps, 250× real-time)
+enc := g729.NewEncoder(g729.ProfileFast())
+
+// 4. ClipRepair: Proteksi saturasi audio (+/-32767) dengan soft-knee declipping
+enc := g729.NewEncoder(g729.ProfileClipRepair())
+
+// 5. Diagnostic: Monitoring telemetri DSP per frame
+enc := g729.NewEncoder(g729.ProfileDiagnostic(func(stats g729.DiagnosticStats) {
+    fmt.Printf("Frame %d: Energy=%.1f dB, PitchLag=%d, Clipped=%d\n",
+        stats.FrameIndex, stats.EnergyDB, stats.PitchLag, stats.ClippedCount)
+}))
+```
+
+### Streaming I/O (`io.Writer` & `io.Reader`)
+
+Untuk memproses aliran byte audio PCM linear 16-bit secara kontinu (misalnya `io.Copy`, pipe, file, socket):
+
+```go
+// Streaming Encode (PCM bytes → G.729 bitstream)
+// Catatan: Writer hanya mendukung CBR (EnableVAD=false). Gunakan package rtp untuk Annex B.
+writer, err := g729.NewWriter(bitstreamOut, g729.ProfileFast())
+if err != nil {
+    log.Fatal(err)
+}
+_, err = io.Copy(writer, pcmReader)
+writer.Close() // Flush padding sisa frame
+
+// Streaming Decode (G.729 bitstream → PCM bytes)
+reader := g729.NewReader(bitstreamIn)
+_, err = io.Copy(pcmOut, reader)
+```
+
 ### RTP Packetization
 
 ```go
@@ -238,6 +284,12 @@ go run ./cmd/benchcheck \
 # Verifikasi ITU-T compliance (butuh test vectors di testdata/itu/)
 # Download dari: https://www.itu.int/net/itu-t/sigdb/genaudio/
 go test -run TestDecoderOfficialTestVector -v .
+
+# Distribusi latensi dan P99 frame jitter test (10 000 frame)
+go test -run TestFrameTimeJitter -v .
+
+# Endurance load-test smoke (50 000 frame / 500 detik simulasi)
+go test -run TestLoadSmoke -v .
 ```
 
 ---
