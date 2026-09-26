@@ -33,7 +33,7 @@ func LPC2LSP(a *[params.M + 1]float32, prevLSP *[params.M]float32) (lsp [params.
 	ylow := chebyshev(xlow, coef, nc)
 
 	j := 0
-	for nf < params.M && j < len(tables.Grid50)-1 {
+	for nf < params.M && j < params.GRID_POINTS {
 		j++
 		xhigh := xlow
 		yhigh := ylow

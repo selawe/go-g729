@@ -1,7 +1,8 @@
 package tables
 
-// Grid50 is the 51-point cosine grid for Chebyshev polynomial evaluation in G.729A (GRID_POINTS=50).
-// Values range from cos(pi*0/50) = 1.0 (approximated) to cos(pi*50/50) = -1.0.
+// Grid50 is the cosine grid for Chebyshev polynomial evaluation in G.729/G.729A.
+// It contains GRID_POINTS+1 = 51 sample points: cos(pi*k/50) for k=0..50,
+// covering 50 equal-cosine intervals from +1.0 down to -1.0.
 var Grid50 = [51]float32{
 	 0.9997559,  0.9980267,  0.9921147,  0.9822872,  0.9685832,
 	 0.9510565,  0.9297765,  0.9048271,  0.8763067,  0.8443279,

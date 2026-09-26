@@ -77,7 +77,9 @@ const (
 	NCODE2 = 16  // GB codebook entries (4 bits)
 
 	// LSP constants.
-	GRID_POINTS = 60            // Chebyshev root finding grid points
+	// GRID_POINTS is the number of equal-cosine intervals in the Chebyshev grid.
+	// Grid50 contains 51 sample points covering 50 intervals (cos(pi*k/50) for k=0..50).
+	GRID_POINTS = 50
 	LSP_GAP     = float32(0.005) // Minimum distance separation between adjacent LSFs (radians)
 
 	// Gain quantization limits.
