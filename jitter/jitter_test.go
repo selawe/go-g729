@@ -222,6 +222,28 @@ func TestJitterBufferConcurrency(t *testing.T) {
 	}
 }
 
+func TestPopIntoBoundsCheck(t *testing.T) {
+	jb := jitter.New(jitter.Config{TargetDelay: 10 * time.Millisecond})
+	_ = jb.Push(0, 0, make([]byte, 10))
+
+	// dst too small: must return ok=false without touching playout state.
+	small := make([]byte, 5)
+	n, isLoss, ok := jb.PopInto(small)
+	if ok || isLoss || n != 0 {
+		t.Fatalf("expected (0,false,false) for small dst, got (%d,%v,%v)", n, isLoss, ok)
+	}
+
+	// State should be intact — a subsequent PopInto with adequate dst must succeed.
+	dst := make([]byte, 10)
+	n, _, ok = jb.PopInto(dst)
+	if !ok {
+		t.Fatalf("expected playout to advance with adequate dst, got ok=false")
+	}
+	if n != 10 {
+		t.Errorf("expected 10 bytes copied, got %d", n)
+	}
+}
+
 func BenchmarkJitterBufferPushPop(b *testing.B) {
 	jb := jitter.New(jitter.Config{TargetDelay: 10 * time.Millisecond})
 	payload := make([]byte, 10)

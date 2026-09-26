@@ -32,6 +32,10 @@ const (
 var (
 	// ErrBufferFull is returned when incoming packets exceed the ring buffer window.
 	ErrBufferFull = errors.New("jitter: buffer capacity exceeded")
+
+	// ErrDstTooSmall is returned by PopInto when dst has insufficient capacity
+	// to hold a full G.729 speech frame (10 bytes).
+	ErrDstTooSmall = errors.New("jitter: destination buffer must be at least 10 bytes")
 )
 
 // Config configures the operating parameters of the jitter buffer.
@@ -177,13 +181,19 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 }
 
 // PopInto retrieves the next chronological 10 ms G.729 frame into dst without heap allocation.
-// dst should have length >= 10 bytes (for speech) or >= 2 bytes (for SID).
+// dst must have length >= rtp.FrameBytes (10) to accommodate any valid frame size (speech or SID).
 //
 // Returns:
 //   - n: number of bytes copied into dst (10 for speech, 2 for SID, 0 for loss/DTX suppressed frame),
 //   - isLoss: true if this slot represents packet loss (trigger PLC in Decoder),
 //   - ok: true if playout slot was ready, false if buffer is buffering or starved (underflow).
+//
+// If dst is too small, PopInto returns (0, false, false) without advancing playout state.
 func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
+	if len(dst) < rtp.FrameBytes {
+		return 0, false, false
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
