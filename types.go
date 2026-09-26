@@ -170,7 +170,14 @@ type Encoder interface {
 	//
 	// dst must have capacity of at least (len(src)/80)*10 bytes.
 	// Returns total bytes written, a slice of FrameType for each encoded frame, or an error.
+	//
+	// For zero-allocation batch encoding in high-throughput transcoders, use EncodeBatchInto.
 	EncodeBatch(dst []byte, src []int16) (n int, frameTypes []FrameType, err error)
+
+	// EncodeBatchInto encodes multiple 10 ms frames without allocating a frameTypes slice.
+	// Caller must provide frameTypes with length >= len(src)/80. Returns total bytes written
+	// and the number of frames actually encoded (may be less than cap on error).
+	EncodeBatchInto(dst []byte, src []int16, frameTypes []FrameType) (n int, numFrames int, err error)
 
 	// Stats returns cumulative operational telemetry for this encoder.
 	Stats() EncoderStats

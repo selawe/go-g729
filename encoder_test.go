@@ -281,6 +281,51 @@ func TestEncodeBatch(t *testing.T) {
 	}
 }
 
+func TestEncodeBatchInto(t *testing.T) {
+	enc := NewEncoder(ProfileFast())
+
+	src20ms := generateSine(1000.0, 160, 8000.0)
+	dst := make([]byte, 20)
+	frameTypes := make([]FrameType, 2)
+
+	n, encoded, err := enc.EncodeBatchInto(dst, src20ms, frameTypes)
+	if err != nil {
+		t.Fatalf("EncodeBatchInto: %v", err)
+	}
+	if n != 20 || encoded != 2 {
+		t.Errorf("expected n=20 encoded=2, got n=%d encoded=%d", n, encoded)
+	}
+	if frameTypes[0] != FrameSpeech || frameTypes[1] != FrameSpeech {
+		t.Errorf("unexpected frame types: %v", frameTypes)
+	}
+
+	// frameTypes too small
+	_, _, err = enc.EncodeBatchInto(dst, src20ms, make([]FrameType, 1))
+	if err == nil {
+		t.Fatal("expected error for undersized frameTypes")
+	}
+
+	// dst too small
+	_, _, err = enc.EncodeBatchInto(make([]byte, 10), src20ms, frameTypes)
+	if err != ErrInvalidOutputLen {
+		t.Fatalf("expected ErrInvalidOutputLen, got %v", err)
+	}
+}
+
+func BenchmarkEncodeBatchInto(b *testing.B) {
+	enc := NewEncoder(ProfileFast())
+	src := generateSine(1000.0, 320, 8000.0) // 4 frames
+	dst := make([]byte, 40)
+	frameTypes := make([]FrameType, 4)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, _, _ = enc.EncodeBatchInto(dst, src, frameTypes)
+	}
+}
+
 func BenchmarkEncodeG729A(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Variant = VariantG729A

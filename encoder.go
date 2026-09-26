@@ -601,30 +601,44 @@ func (e *encoder) Stats() EncoderStats {
 }
 
 // EncodeBatch encodes multiple consecutive 10 ms speech frames (multiples of 80 int16 samples) into dst.
+// For zero-allocation batch encoding, use EncodeBatchInto.
 func (e *encoder) EncodeBatch(dst []byte, src []int16) (int, []FrameType, error) {
 	if len(src)%params.L_FRAME != 0 || len(src) == 0 {
 		return 0, nil, errors.New("g729: src length must be a non-zero multiple of 80 samples")
 	}
 	numFrames := len(src) / params.L_FRAME
-	if len(dst) < numFrames*params.BYTES_PER_FRAME {
-		return 0, nil, ErrInvalidOutputLen
+	frameTypes := make([]FrameType, numFrames)
+	n, encoded, err := e.EncodeBatchInto(dst, src, frameTypes)
+	return n, frameTypes[:encoded], err
+}
+
+// EncodeBatchInto encodes multiple 10 ms frames without allocating a frameTypes slice.
+// Caller must provide frameTypes with length >= len(src)/80.
+// Returns total bytes written, number of frames actually encoded, and an error if any.
+func (e *encoder) EncodeBatchInto(dst []byte, src []int16, frameTypes []FrameType) (n int, numFrames int, err error) {
+	if len(src)%params.L_FRAME != 0 || len(src) == 0 {
+		return 0, 0, errors.New("g729: src length must be a non-zero multiple of 80 samples")
+	}
+	total := len(src) / params.L_FRAME
+	if len(dst) < total*params.BYTES_PER_FRAME {
+		return 0, 0, ErrInvalidOutputLen
+	}
+	if len(frameTypes) < total {
+		return 0, 0, errors.New("g729: frameTypes length must be >= len(src)/80")
 	}
 
-	frameTypes := make([]FrameType, numFrames)
-	totalBytes := 0
-
-	for i := 0; i < numFrames; i++ {
+	for i := 0; i < total; i++ {
 		frameSrc := src[i*params.L_FRAME : (i+1)*params.L_FRAME]
-		frameDst := dst[totalBytes:]
-		fn, ft, err := e.Encode(frameDst, frameSrc)
-		if err != nil {
-			return totalBytes, frameTypes[:i], err
+		frameDst := dst[n:]
+		fn, ft, encErr := e.Encode(frameDst, frameSrc)
+		if encErr != nil {
+			return n, i, encErr
 		}
 		frameTypes[i] = ft
-		totalBytes += fn
+		n += fn
 	}
 
-	return totalBytes, frameTypes, nil
+	return n, total, nil
 }
 
 // invokeDiagnostic calls the optional OnDiagnostic callback, recovering from any panic.
