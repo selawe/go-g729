@@ -1,0 +1,9 @@
+# Scratch and temporary files
+scratch/
+*.prof
+*.test
+*.exe
+
+# OS generated files
+.DS_Store
+Thumbs.db
