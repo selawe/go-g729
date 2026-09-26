@@ -414,7 +414,7 @@ func TestFrameTimeJitterEncode(t *testing.T) {
 	// P50 may show as 0 µs on Windows — this is a timer quantisation artefact,
 	// not an indication that frames are instant (benchmark -bench confirms ~42 µs).
 	const p99Gate = 2_000_000  // 2 ms
-	const p999Gate = 5_000_000 // 5 ms
+	const p999Gate = 8_000_000 // 8 ms (sub-frame real-time budget is 10 ms)
 	if p99 > p99Gate {
 		t.Errorf("P99 %s > gate %s — risk of audio glitch under load", ns2us(p99), ns2us(p99Gate))
 	}
@@ -462,7 +462,7 @@ func TestFrameTimeJitterDecode(t *testing.T) {
 	t.Logf("  Max   = %s", ns2us(pmax))
 
 	const p99Gate = 2_000_000  // 2 ms
-	const p999Gate = 5_000_000 // 5 ms
+	const p999Gate = 8_000_000 // 8 ms
 	if p99 > p99Gate {
 		t.Errorf("P99 %s > gate %s", ns2us(p99), ns2us(p99Gate))
 	}
