@@ -70,6 +70,13 @@ func (s *PostFilterState) Reset() {
 //   - pitchLags: decoded integer pitch lags for subframe 1 and subframe 2
 //   - state: persistent postfilter state
 func PostFilter(syn []float32, az []float32, pitchLags [2]int, state *PostFilterState) {
+	PostFilterB(syn, az, pitchLags, 1, state)
+}
+
+// PostFilterB performs adaptive postfiltering on one frame of synthesized speech (80 samples)
+// in-place according to ITU-T G.729 / G.729A / Annex B.
+// When vad == 0 (non-active speech / comfort noise), the pitch postfilter is bypassed.
+func PostFilterB(syn []float32, az []float32, pitchLags [2]int, vad int, state *PostFilterState) {
 	var synPst [params.L_FRAME]float32
 	var res2Pst [params.L_SUBFR]float32
 	var ap3, ap4 [params.M + 1]float32
@@ -101,7 +108,11 @@ func PostFilter(syn []float32, az []float32, pitchLags [2]int, state *PostFilter
 		dsp.Residue(res2, syn[iSubfr:iSubfr+params.L_SUBFR], ap3[:], nil, false)
 
 		// 4. Pitch postfiltering on res2
-		pitPstFilt(&state.res2Buf, t0Min, t0Max, res2Pst[:])
+		if vad == 1 {
+			pitPstFilt(&state.res2Buf, t0Min, t0Max, res2Pst[:])
+		} else {
+			copy(res2Pst[:], res2[:])
+		}
 
 		// 5. Tilt compensation: impulse response h of A(z/gamma2_pst) / A(z/gamma1_pst)
 		copy(h[:params.M+1], ap3[:params.M+1])

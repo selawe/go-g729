@@ -71,3 +71,20 @@ type Encoder interface {
 	// Reset clears all internal state, delay lines, and history buffers to their initial reset state.
 	Reset()
 }
+
+// Decoder defines the interface for decompressing G.729 bitstream frames into 8 kHz 16-bit linear PCM audio.
+// A Decoder instance is NOT safe for concurrent use across multiple goroutines; each audio stream
+// must have its own Decoder instance.
+type Decoder interface {
+	// Decode decompresses a G.729 bitstream frame in src (10 bytes for speech, 2 bytes for SID,
+	// or 0 bytes / nil for packet loss erasure / untransmitted frame) into 80 16-bit PCM samples in dst.
+	//
+	// dst must have capacity of at least 80 samples.
+	//
+	// Returns nil on success, or an error if dst or src lengths are invalid.
+	Decode(dst []int16, src []byte) error
+
+	// Reset clears all internal state, delay lines, and history buffers to their initial reset state.
+	Reset()
+}
+
