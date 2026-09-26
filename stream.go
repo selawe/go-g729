@@ -2,12 +2,29 @@ package g729
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
+)
+
+// ErrVADNotSupportedInStream is returned by NewWriter when the caller supplies
+// a Config with EnableVAD=true. The raw byte streaming format requires fixed
+// 10-byte speech frames and cannot represent variable-length SID frames (2 bytes)
+// or suppressed frames (0 bytes) without an additional framing layer.
+//
+// For Annex B (VAD/DTX/CNG) streams, use the rtp package which correctly
+// packetises speech, SID, and untransmitted frames as separate RTP packets.
+var ErrVADNotSupportedInStream = errors.New(
+	"g729: NewWriter does not support EnableVAD=true; " +
+		"use EnableVAD=false for raw CBR streaming, or use the rtp package for Annex B streams",
 )
 
 // Writer implements an io.WriteCloser that encodes an incoming stream of
 // 16-bit linear PCM audio (8 kHz, mono, little-endian) and writes G.729
 // bitstream frames to an underlying io.Writer.
+//
+// Restriction: Writer only supports constant bit-rate (CBR) streams
+// (Config.EnableVAD must be false). For Annex B VAD/DTX streams, use the
+// rtp package, which correctly handles variable-length SID and suppressed frames.
 type Writer struct {
 	w      io.Writer
 	enc    Encoder
@@ -17,11 +34,15 @@ type Writer struct {
 }
 
 // NewWriter creates a new streaming G.729 encoder writing to w.
-func NewWriter(w io.Writer, cfg Config) *Writer {
+// cfg.EnableVAD must be false; returns ErrVADNotSupportedInStream otherwise.
+func NewWriter(w io.Writer, cfg Config) (*Writer, error) {
+	if cfg.EnableVAD {
+		return nil, ErrVADNotSupportedInStream
+	}
 	return &Writer{
 		w:   w,
 		enc: NewEncoder(cfg),
-	}
+	}, nil
 }
 
 // Write writes arbitrary-sized chunks of 16-bit linear PCM audio to the encoder.
@@ -108,6 +129,11 @@ func (w *Writer) Close() error {
 // Reader implements an io.Reader that reads a G.729 bitstream from an underlying
 // io.Reader and decompresses it into an outgoing stream of 16-bit linear PCM
 // audio (8 kHz, mono, little-endian).
+//
+// Restriction: Reader expects a constant bit-rate (CBR) bitstream where every
+// frame is exactly 10 bytes. It is designed to consume streams produced by
+// Writer (with EnableVAD=false). Annex B bitstreams containing 2-byte SID
+// frames or suppressed frames will be misparsed; use the rtp package instead.
 type Reader struct {
 	r       io.Reader
 	dec     Decoder
@@ -118,6 +144,8 @@ type Reader struct {
 }
 
 // NewReader creates a new streaming G.729 decoder reading from r.
+// The reader expects a CBR bitstream of 10-byte speech frames as produced
+// by Writer. For Annex B streams, use the rtp package.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{
 		r:   r,

@@ -10,6 +10,25 @@ import (
 	g729 "github.com/selawe/go-g729"
 )
 
+// TestNewWriterRejectsVAD ensures NewWriter returns ErrVADNotSupportedInStream
+// when EnableVAD=true, preventing silent stream corruption.
+func TestNewWriterRejectsVAD(t *testing.T) {
+	_, err := g729.NewWriter(io.Discard, g729.ProfileCore()) // Core has EnableVAD=true
+	if err == nil {
+		t.Fatal("expected error for EnableVAD=true, got nil")
+	}
+	if err != g729.ErrVADNotSupportedInStream {
+		t.Fatalf("expected ErrVADNotSupportedInStream, got: %v", err)
+	}
+
+	// ProfileFast (EnableVAD=false) must succeed
+	w, err := g729.NewWriter(io.Discard, g729.ProfileFast())
+	if err != nil {
+		t.Fatalf("unexpected error for EnableVAD=false: %v", err)
+	}
+	_ = w
+}
+
 func TestStreamRoundTrip(t *testing.T) {
 	// Generate 10 frames (100 ms = 800 samples = 1600 bytes) of 440 Hz tone
 	const numSamples = 800
@@ -24,7 +43,10 @@ func TestStreamRoundTrip(t *testing.T) {
 
 	for _, chunkSize := range chunkSizes {
 		var bitstreamBuf bytes.Buffer
-		writer := g729.NewWriter(&bitstreamBuf, g729.ProfileFast())
+		writer, err := g729.NewWriter(&bitstreamBuf, g729.ProfileFast())
+		if err != nil {
+			t.Fatalf("chunkSize %d: NewWriter: %v", chunkSize, err)
+		}
 
 		// Stream write in chunks
 		for offset := 0; offset < len(pcmInput); offset += chunkSize {
@@ -78,9 +100,12 @@ func TestStreamPartialFramePadding(t *testing.T) {
 	// Write 100 samples (200 bytes) = 1 full frame (160 bytes) + 40 bytes partial
 	pcmInput := make([]byte, 200)
 	var bitstreamBuf bytes.Buffer
-	writer := g729.NewWriter(&bitstreamBuf, g729.ProfileFast())
+	writer, err := g729.NewWriter(&bitstreamBuf, g729.ProfileFast())
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
 
-	_, err := writer.Write(pcmInput)
+	_, err = writer.Write(pcmInput)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
