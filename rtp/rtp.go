@@ -53,6 +53,9 @@ var (
 
 	// ErrEmptyPayload is returned when Pack receives no frames.
 	ErrEmptyPayload = errors.New("rtp: no frames to pack")
+
+	// ErrBufferTooSmall is returned when a destination slice has insufficient capacity.
+	ErrBufferTooSmall = errors.New("rtp: destination buffer too small")
 )
 
 // FrameType classifies the content type of a G.729 payload or frame.
@@ -178,6 +181,64 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 
 	default:
 		return nil, PayloadInfo{}, fmt.Errorf("%w: length %d is not 0, 2, or a multiple of 10",
+			ErrInvalidPayload, len(payload))
+	}
+}
+
+// UnpackInto extracts G.729 frames from payload into dst without heap allocation.
+// dst must have length >= the number of frames contained in payload:
+//   - 0 bytes (suppressed): requires len(dst) >= 1 (dst[0] set to nil)
+//   - 2 bytes (SID):        requires len(dst) >= 1
+//   - n×10 bytes (speech):  requires len(dst) >= n
+//
+// For each frame i, if dst[i] has capacity >= frameSize, payload bytes are copied
+// into dst[i][:frameSize]. Otherwise, dst[i] is set directly to payload's sub-slice.
+//
+// Returns the number of frames populated in dst, PayloadInfo, and an error if dst
+// is too short or payload length is invalid.
+func UnpackInto(dst [][]byte, payload []byte) (int, PayloadInfo, error) {
+	switch {
+	case len(payload) == 0:
+		if len(dst) < 1 {
+			return 0, PayloadInfo{}, fmt.Errorf("%w: dst length %d < 1", ErrBufferTooSmall, len(dst))
+		}
+		dst[0] = nil
+		return 1, PayloadInfo{Type: FrameSuppressed, DurationMs: FrameDurationMs}, nil
+
+	case len(payload) == SIDBytes:
+		if len(dst) < 1 {
+			return 0, PayloadInfo{}, fmt.Errorf("%w: dst length %d < 1", ErrBufferTooSmall, len(dst))
+		}
+		if cap(dst[0]) >= SIDBytes {
+			dst[0] = dst[0][:SIDBytes]
+			copy(dst[0], payload)
+		} else {
+			dst[0] = payload[:SIDBytes]
+		}
+		return 1, PayloadInfo{Type: FrameSID, DurationMs: FrameDurationMs}, nil
+
+	case len(payload)%FrameBytes == 0:
+		n := len(payload) / FrameBytes
+		if len(dst) < n {
+			return 0, PayloadInfo{}, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), n)
+		}
+		for i := 0; i < n; i++ {
+			sub := payload[i*FrameBytes : (i+1)*FrameBytes]
+			if cap(dst[i]) >= FrameBytes {
+				dst[i] = dst[i][:FrameBytes]
+				copy(dst[i], sub)
+			} else {
+				dst[i] = sub
+			}
+		}
+		return n, PayloadInfo{
+			Type:       FrameSpeech,
+			NumFrames:  n,
+			DurationMs: n * FrameDurationMs,
+		}, nil
+
+	default:
+		return 0, PayloadInfo{}, fmt.Errorf("%w: length %d is not 0, 2, or a multiple of 10",
 			ErrInvalidPayload, len(payload))
 	}
 }

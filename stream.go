@@ -18,6 +18,23 @@ var ErrVADNotSupportedInStream = errors.New(
 		"use EnableVAD=false for raw CBR streaming, or use the rtp package for Annex B streams",
 )
 
+// FlushMode defines how Writer.Close handles residual trailing PCM samples
+// that do not fill a complete 10 ms (80 sample / 160 byte) frame.
+type FlushMode int
+
+const (
+	// FlushZeroPad zero-pads the remaining samples to form a complete 80-sample frame (default).
+	FlushZeroPad FlushMode = iota
+	// FlushDrop discards any trailing incomplete frame without emitting a final padded frame.
+	FlushDrop
+	// FlushError returns ErrIncompleteFrame on Close if incomplete frame bytes remain.
+	FlushError
+)
+
+// ErrIncompleteFrame is returned by Writer.Close when FlushError mode is set
+// and trailing unencoded PCM samples remain in the buffer.
+var ErrIncompleteFrame = errors.New("g729: stream closed with incomplete trailing frame")
+
 // Writer implements an io.WriteCloser that encodes an incoming stream of
 // 16-bit linear PCM audio (8 kHz, mono, little-endian) and writes G.729
 // bitstream frames to an underlying io.Writer.
@@ -26,11 +43,13 @@ var ErrVADNotSupportedInStream = errors.New(
 // (Config.EnableVAD must be false). For Annex B VAD/DTX streams, use the
 // rtp package, which correctly handles variable-length SID and suppressed frames.
 type Writer struct {
-	w      io.Writer
-	enc    Encoder
-	buf    [160]byte // 80 int16 samples = 160 bytes
-	bufLen int
-	dst    [10]byte
+	w             io.Writer
+	enc           Encoder
+	buf           [160]byte // 80 int16 samples = 160 bytes
+	bufLen        int
+	dst           [10]byte
+	flushMode     FlushMode
+	paddedSamples int
 }
 
 // NewWriter creates a new streaming G.729 encoder writing to w.
@@ -106,18 +125,39 @@ func (w *Writer) encodeAndWrite(block []byte) error {
 	return nil
 }
 
-// Close flushes any remaining buffered PCM samples (zero-padding to 80 samples
-// if a partial frame exists) and closes the underlying writer if it implements io.Closer.
+// SetFlushMode configures how Close handles trailing partial PCM samples.
+func (w *Writer) SetFlushMode(mode FlushMode) {
+	w.flushMode = mode
+}
+
+// PaddedSamples returns the number of zero-padded samples appended to the final
+// frame when Close is called under FlushZeroPad mode.
+func (w *Writer) PaddedSamples() int {
+	return w.paddedSamples
+}
+
+// Close flushes any remaining buffered PCM samples according to the configured FlushMode
+// (default FlushZeroPad: zero-pads to 80 samples) and closes the underlying writer
+// if it implements io.Closer.
 func (w *Writer) Close() error {
 	if w.bufLen > 0 {
-		// Zero-pad remainder of partial frame
-		for i := w.bufLen; i < 160; i++ {
-			w.buf[i] = 0
+		switch w.flushMode {
+		case FlushZeroPad:
+			unpaddedBytes := w.bufLen
+			for i := w.bufLen; i < 160; i++ {
+				w.buf[i] = 0
+			}
+			w.paddedSamples = (160 - unpaddedBytes) / 2
+			if err := w.encodeAndWrite(w.buf[:]); err != nil {
+				return err
+			}
+			w.bufLen = 0
+		case FlushDrop:
+			w.bufLen = 0
+		case FlushError:
+			w.bufLen = 0
+			return ErrIncompleteFrame
 		}
-		if err := w.encodeAndWrite(w.buf[:]); err != nil {
-			return err
-		}
-		w.bufLen = 0
 	}
 
 	if closer, ok := w.w.(io.Closer); ok {
@@ -186,15 +226,19 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 			}
 			return 0, readErr
 		}
-		if nRead < 10 && readErr != nil && readErr != io.ErrUnexpectedEOF {
-			if totalRead > 0 {
-				return totalRead, nil
+		if nRead < 10 {
+			errToReturn := readErr
+			if errToReturn == nil {
+				errToReturn = io.ErrUnexpectedEOF
 			}
-			return 0, readErr
+			if totalRead > 0 {
+				return totalRead, errToReturn
+			}
+			return 0, errToReturn
 		}
 
-		// Decompress frame into 80 int16 samples
-		if err := r.dec.Decode(r.pcm[:], frame[:nRead]); err != nil {
+		// Decompress frame into 80 int16 samples (strictly 10-byte CBR frames)
+		if err := r.dec.Decode(r.pcm[:], frame[:]); err != nil {
 			if totalRead > 0 {
 				return totalRead, nil
 			}

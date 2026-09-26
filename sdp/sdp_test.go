@@ -120,6 +120,13 @@ func TestParseFMTPLine(t *testing.T) {
 	}
 }
 
+func TestParseFMTPLineMismatch(t *testing.T) {
+	_, err := sdp.ParseFMTPLine("a=fmtp:96 annexb=no", 18)
+	if err == nil {
+		t.Fatal("expected error for payload type mismatch, got nil")
+	}
+}
+
 func TestConfigFromFMTP(t *testing.T) {
 	cfg, err := sdp.ConfigFromFMTP("annexb=yes")
 	if err != nil {

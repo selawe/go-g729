@@ -122,4 +122,70 @@ func TestStreamPartialFramePadding(t *testing.T) {
 	if bitstreamBuf.Len() != 20 {
 		t.Fatalf("expected 20 bytes after close (2 frames), got %d", bitstreamBuf.Len())
 	}
+	// 200 bytes total = 100 samples. Frame 1 had 80 samples, so 20 original samples in frame 2.
+	// 80 - 20 = 60 padded samples.
+	if writer.PaddedSamples() != 60 {
+		t.Errorf("expected 60 padded samples, got %d", writer.PaddedSamples())
+	}
+}
+
+func TestStreamFlushDrop(t *testing.T) {
+	// Write 100 samples (200 bytes) = 1 full frame (160 bytes) + 40 bytes partial
+	pcmInput := make([]byte, 200)
+	var bitstreamBuf bytes.Buffer
+	writer, err := g729.NewWriter(&bitstreamBuf, g729.ProfileFast())
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	writer.SetFlushMode(g729.FlushDrop)
+
+	if _, err := writer.Write(pcmInput); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// FlushDrop must discard the remaining 40 bytes; only 1 frame (10 bytes) should be emitted
+	if bitstreamBuf.Len() != 10 {
+		t.Fatalf("expected 10 bytes after FlushDrop close, got %d", bitstreamBuf.Len())
+	}
+}
+
+func TestStreamFlushError(t *testing.T) {
+	// Write 100 samples (200 bytes) = 1 full frame (160 bytes) + 40 bytes partial
+	pcmInput := make([]byte, 200)
+	var bitstreamBuf bytes.Buffer
+	writer, err := g729.NewWriter(&bitstreamBuf, g729.ProfileFast())
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	writer.SetFlushMode(g729.FlushError)
+
+	if _, err := writer.Write(pcmInput); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	err = writer.Close()
+	if err != g729.ErrIncompleteFrame {
+		t.Fatalf("expected ErrIncompleteFrame on Close, got: %v", err)
+	}
+}
+
+func TestStreamReaderRejectsNon10ByteFrames(t *testing.T) {
+	// 1. Incomplete frame (e.g. 5 bytes)
+	badData := []byte{1, 2, 3, 4, 5}
+	reader := g729.NewReader(bytes.NewReader(badData))
+	out := make([]byte, 160)
+	_, err := reader.Read(out)
+	if err != io.ErrUnexpectedEOF {
+		t.Errorf("expected ErrUnexpectedEOF for 5-byte stream, got: %v", err)
+	}
+
+	// 2. 2-byte SID frame in raw CBR stream must be rejected
+	sidData := []byte{0x55, 0xAA}
+	reader2 := g729.NewReader(bytes.NewReader(sidData))
+	_, err = reader2.Read(out)
+	if err != io.ErrUnexpectedEOF {
+		t.Errorf("expected ErrUnexpectedEOF for 2-byte SID stream, got: %v", err)
+	}
 }

@@ -79,8 +79,21 @@ func main() {
 	}
 }
 
+const maxFileSize = 500 * 1024 * 1024 // 500 MB sanity limit
+
+func readFileBounded(filename string) ([]byte, error) {
+	fi, err := os.Stat(filename)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > maxFileSize {
+		return nil, fmt.Errorf("file size %d bytes exceeds maximum allowed limit of %d bytes (500 MB)", fi.Size(), maxFileSize)
+	}
+	return os.ReadFile(filename)
+}
+
 func runEncode(inFile, outFile string, isFull bool, enableVAD bool, showBench bool) error {
-	inData, err := os.ReadFile(inFile)
+	inData, err := readFileBounded(inFile)
 	if err != nil {
 		return fmt.Errorf("reading input file: %w", err)
 	}
@@ -168,32 +181,30 @@ func runEncode(inFile, outFile string, isFull bool, enableVAD bool, showBench bo
 }
 
 func runDecode(inFile, outFile string, lossRate float64, forceWav bool, showBench bool) error {
-	inData, err := os.ReadFile(inFile)
+	inData, err := readFileBounded(inFile)
 	if err != nil {
 		return fmt.Errorf("reading input file: %w", err)
 	}
 
 	dec := g729.NewDecoder()
+	// math/rand is used strictly for simulated packet loss in CLI testing; non-cryptographic.
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	// Determine frames from byte stream (10 bytes for speech, 2 bytes for SID)
-	var frames [][]byte
-	idx := 0
-	for idx < len(inData) {
-		rem := len(inData) - idx
-		if rem >= 10 {
-			frames = append(frames, inData[idx:idx+10])
-			idx += 10
-		} else if rem >= 2 {
-			frames = append(frames, inData[idx:idx+2])
-			idx += 2
-		} else {
-			break
-		}
+	// Determine frames from byte stream.
+	// Raw .g729 bitstream files must be constant bit-rate (CBR) 10-byte speech frames.
+	// Annex B VBR streams (mixed 10-byte speech and 2-byte SID frames) cannot be
+	// disambiguated without container framing; use RTP packet framing for Annex B.
+	if len(inData)%10 != 0 {
+		return fmt.Errorf("input file size (%d bytes) is not a multiple of 10 (G.729 CBR frame size); raw bitstreams cannot disambiguate Annex B VBR frames. Use RTP framing or CBR .g729 streams", len(inData))
+	}
+	numFrames := len(inData) / 10
+	if numFrames == 0 {
+		return fmt.Errorf("no valid G.729 frames found in input file")
 	}
 
-	if len(frames) == 0 {
-		return fmt.Errorf("no valid G.729 frames found in input file")
+	frames := make([][]byte, numFrames)
+	for i := 0; i < numFrames; i++ {
+		frames[i] = inData[i*10 : (i+1)*10]
 	}
 
 	pcmOut := make([]byte, len(frames)*80*2)
@@ -293,13 +304,17 @@ func extractWavPCM(data []byte) ([]byte, error) {
 		chunkSize := binary.LittleEndian.Uint32(data[offset+4 : offset+8])
 		if chunkID == "data" {
 			dataStart := offset + 8
-			dataEnd := dataStart + int(chunkSize)
-			if dataEnd > len(data) {
-				dataEnd = len(data)
+			dataEnd := uint64(dataStart) + uint64(chunkSize)
+			if dataEnd > uint64(len(data)) {
+				dataEnd = uint64(len(data))
 			}
 			return data[dataStart:dataEnd], nil
 		}
-		offset += 8 + int(chunkSize)
+		nextOffset := uint64(offset) + 8 + uint64(chunkSize)
+		if nextOffset > uint64(len(data)) {
+			break
+		}
+		offset = int(nextOffset)
 	}
 
 	// Fallback to byte 44

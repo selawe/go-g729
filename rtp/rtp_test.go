@@ -1,6 +1,7 @@
 package rtp_test
 
 import (
+	"bytes"
 	"testing"
 
 	g729 "github.com/selawe/go-g729"
@@ -234,5 +235,79 @@ func TestRoundTripViaRTP(t *testing.T) {
 		if err := dec.Decode(out, f); err != nil {
 			t.Fatalf("decode frame %d: %v", i, err)
 		}
+	}
+}
+
+func TestUnpackInto(t *testing.T) {
+	// 1. Speech frames (2 frames = 20 bytes)
+	payload := make([]byte, 20)
+	for i := range payload {
+		payload[i] = byte(i + 1)
+	}
+	dst := make([][]byte, 2)
+	n, info, err := rtp.UnpackInto(dst, payload)
+	if err != nil {
+		t.Fatalf("UnpackInto speech: %v", err)
+	}
+	if n != 2 || info.Type != rtp.FrameSpeech || info.NumFrames != 2 {
+		t.Fatalf("unexpected speech info: n=%d info=%+v", n, info)
+	}
+	if !bytes.Equal(dst[0], payload[:10]) || !bytes.Equal(dst[1], payload[10:]) {
+		t.Errorf("unpacked slices do not match payload")
+	}
+
+	// 2. Pre-allocated destination slices
+	dstPre := [][]byte{make([]byte, 10), make([]byte, 10)}
+	n, info, err = rtp.UnpackInto(dstPre, payload)
+	if err != nil {
+		t.Fatalf("UnpackInto preallocated: %v", err)
+	}
+	if n != 2 || !bytes.Equal(dstPre[0], payload[:10]) || !bytes.Equal(dstPre[1], payload[10:]) {
+		t.Errorf("preallocated slices do not match payload")
+	}
+
+	// 3. SID frame (2 bytes)
+	sidPayload := []byte{0x55, 0xAA}
+	dstSID := make([][]byte, 1)
+	n, info, err = rtp.UnpackInto(dstSID, sidPayload)
+	if err != nil {
+		t.Fatalf("UnpackInto SID: %v", err)
+	}
+	if n != 1 || info.Type != rtp.FrameSID || !bytes.Equal(dstSID[0], sidPayload) {
+		t.Errorf("unexpected SID result")
+	}
+
+	// 4. Suppressed frame (0 bytes)
+	dstSupp := make([][]byte, 1)
+	n, info, err = rtp.UnpackInto(dstSupp, nil)
+	if err != nil {
+		t.Fatalf("UnpackInto suppressed: %v", err)
+	}
+	if n != 1 || info.Type != rtp.FrameSuppressed || dstSupp[0] != nil {
+		t.Errorf("unexpected suppressed result")
+	}
+
+	// 5. Insufficient dst capacity
+	shortDst := make([][]byte, 1)
+	_, _, err = rtp.UnpackInto(shortDst, payload)
+	if err == nil {
+		t.Fatal("expected error for short dst buffer, got nil")
+	}
+
+	// 6. Invalid payload length (e.g. 5 bytes)
+	_, _, err = rtp.UnpackInto(dst, []byte{1, 2, 3, 4, 5})
+	if err == nil {
+		t.Fatal("expected error for invalid payload length, got nil")
+	}
+}
+
+func BenchmarkUnpackInto(b *testing.B) {
+	payload := make([]byte, 20)
+	dst := make([][]byte, 2)
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, _, _ = rtp.UnpackInto(dst, payload)
 	}
 }

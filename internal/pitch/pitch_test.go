@@ -271,6 +271,28 @@ func TestPitchConcurrency(t *testing.T) {
 	wg.Wait()
 }
 
+// TestDecodePitchAdversarialBounds verifies that out-of-range or edge indices
+// never yield pitch lags below PIT_MIN (20) or above PIT_MAX (143).
+func TestDecodePitchAdversarialBounds(t *testing.T) {
+	indices := []int{0, 1, 2, 196, 197, 255, 300}
+	for _, idx := range indices {
+		var t0Min, t0Max int
+		t0, _ := DecodePitch(idx, 0, &t0Min, &t0Max)
+		if t0 < params.PIT_MIN || t0 > params.PIT_MAX {
+			t.Errorf("subframe 0: idx=%d decoded to t0=%d; want [%d, %d]", idx, t0, params.PIT_MIN, params.PIT_MAX)
+		}
+	}
+
+	for _, idx := range []int{0, 1, 2, 15, 31, 50} {
+		min := params.PIT_MIN
+		max := params.PIT_MIN + 9
+		t0, _ := DecodePitch(idx, 1, &min, &max)
+		if t0 < params.PIT_MIN || t0 > params.PIT_MAX {
+			t.Errorf("subframe 1: idx=%d decoded to t0=%d; want [%d, %d]", idx, t0, params.PIT_MIN, params.PIT_MAX)
+		}
+	}
+}
+
 // Benchmarks for Phase 4.
 
 func BenchmarkOpenLoopPitch(b *testing.B) {

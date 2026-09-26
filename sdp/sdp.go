@@ -162,18 +162,18 @@ func ParseFMTPLine(line string, payloadType int) (annexb bool, err error) {
 	}
 
 	// Strip payload-type prefix if present
-	if payloadType > 0 {
-		ptPrefix := strconv.Itoa(payloadType) + " "
-		if strings.HasPrefix(line, ptPrefix) {
-			line = line[len(ptPrefix):]
-		}
-	} else {
-		// Strip any leading "<digits> " prefix
-		if idx := strings.Index(line, " "); idx != -1 {
-			if _, e := strconv.Atoi(line[:idx]); e == nil {
-				line = line[idx+1:]
+	if idx := strings.Index(line, " "); idx != -1 {
+		if pt, e := strconv.Atoi(line[:idx]); e == nil {
+			if payloadType > 0 && pt != payloadType {
+				return false, fmt.Errorf("sdp: payload type mismatch (line has %d, expected %d)", pt, payloadType)
 			}
+			line = line[idx+1:]
 		}
+	} else if pt, e := strconv.Atoi(line); e == nil {
+		if payloadType > 0 && pt != payloadType {
+			return false, fmt.Errorf("sdp: payload type mismatch (line has %d, expected %d)", pt, payloadType)
+		}
+		line = ""
 	}
 
 	return ParseFMTP(line)

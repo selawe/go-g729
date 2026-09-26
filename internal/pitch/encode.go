@@ -54,6 +54,12 @@ func DecodePitch(index int, subframe int, t0Min, t0Max *int) (t0 int, frac int) 
 			t0 = index - 112
 			frac = 0
 		}
+		if t0 < params.PIT_MIN {
+			t0 = params.PIT_MIN
+		}
+		if t0 > params.PIT_MAX {
+			t0 = params.PIT_MAX
+		}
 
 		min := t0 - 5
 		if min < params.PIT_MIN {
@@ -80,5 +86,11 @@ func DecodePitch(index int, subframe int, t0Min, t0Max *int) (t0 int, frac int) 
 	i := (index+2)/3 - 1
 	t0 = i + min
 	frac = index - 2 - i*3
+	if t0 < params.PIT_MIN {
+		t0 = params.PIT_MIN
+	}
+	if t0 > params.PIT_MAX {
+		t0 = params.PIT_MAX
+	}
 	return t0, frac
 }

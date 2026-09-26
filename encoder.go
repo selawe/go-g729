@@ -1,6 +1,7 @@
 package g729
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/selawe/go-g729/internal/bits"
@@ -141,6 +142,14 @@ func (e *encoder) Reset() {
 // Encode processes 80 samples (10 ms) of 16-bit linear PCM audio in src, and writes the encoded
 // bitstream into dst.
 func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("g729: encode panic: %v", r)
+			n = 0
+			frameType = FrameUntransmitted
+		}
+	}()
+
 	// 1. Validate buffers
 	if len(src) != params.L_FRAME {
 		return 0, FrameUntransmitted, ErrInvalidInputLen
@@ -234,20 +243,18 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 			copy(e.oldWsp[:params.PIT_MAX], e.oldWsp[params.L_FRAME:params.L_FRAME+params.PIT_MAX])
 			copy(e.oldExc[:params.L_PAST_EXC], e.oldExc[params.L_FRAME:params.L_FRAME+params.L_PAST_EXC])
 
-			if e.cfg.OnDiagnostic != nil {
-				ft := FrameUntransmitted
-				if sid.Transmitted {
-					ft = FrameSID
-				}
-				e.cfg.OnDiagnostic(DiagnosticStats{
-					FrameIndex:   e.frameCount,
-					FrameType:    ft,
-					EnergyDB:     energyDB,
-					ZeroCrossing: zeroCrossingRate(speech),
-					VADMarker:    marker, // use marker variable, not hardcoded vad.Noise
-					ClippedCount: clippedCount,
-				})
+			ft := FrameUntransmitted
+			if sid.Transmitted {
+				ft = FrameSID
 			}
+			e.invokeDiagnostic(DiagnosticStats{
+				FrameIndex:   e.frameCount,
+				FrameType:    ft,
+				EnergyDB:     energyDB,
+				ZeroCrossing: zeroCrossingRate(speech),
+				VADMarker:    marker, // use marker variable, not hardcoded vad.Noise
+				ClippedCount: clippedCount,
+			})
 
 			if sid.Transmitted {
 				copy(dst[:params.BYTES_PER_SID], sid.Packed[:])
@@ -555,21 +562,30 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	// 12. Serialize 80 bits into dst
 	bits.Pack(dst[:params.BYTES_PER_FRAME], &e.paramSet)
 
-	if e.cfg.OnDiagnostic != nil {
-		e.cfg.OnDiagnostic(DiagnosticStats{
-			FrameIndex:   e.frameCount,
-			FrameType:    FrameSpeech,
-			EnergyDB:     energyDB,
-			ZeroCrossing: zeroCrossingRate(speech),
-			VADMarker:    marker,
-			PitchLag:     tOp,
-			GainPitch:    subfrGainPit,
-			GainCode:     subfrGainCode,
-			ClippedCount: clippedCount,
-		})
-	}
+	e.invokeDiagnostic(DiagnosticStats{
+		FrameIndex:   e.frameCount,
+		FrameType:    FrameSpeech,
+		EnergyDB:     energyDB,
+		ZeroCrossing: zeroCrossingRate(speech),
+		VADMarker:    marker,
+		PitchLag:     tOp,
+		GainPitch:    subfrGainPit,
+		GainCode:     subfrGainCode,
+		ClippedCount: clippedCount,
+	})
 
 	return params.BYTES_PER_FRAME, FrameSpeech, nil
+}
+
+// invokeDiagnostic calls the optional OnDiagnostic callback, recovering from any panic.
+func (e *encoder) invokeDiagnostic(stats DiagnosticStats) {
+	if e.cfg.OnDiagnostic == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	e.cfg.OnDiagnostic(stats)
 }
 
 // zeroCrossingRate returns the normalised zero-crossing rate of a speech frame

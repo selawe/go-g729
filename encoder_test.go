@@ -207,6 +207,29 @@ func TestEncoderConcurrency(t *testing.T) {
 	wg.Wait()
 }
 
+func TestOnDiagnosticPanicSafety(t *testing.T) {
+	panicked := false
+	cfg := ProfileDiagnostic(func(stats DiagnosticStats) {
+		panicked = true
+		panic("user callback panicked intentionally")
+	})
+	enc := NewEncoder(cfg)
+
+	frame := generateSine(1000.0, 80, 8000.0)
+	var dst [10]byte
+
+	n, ft, err := enc.Encode(dst[:], frame)
+	if err != nil {
+		t.Fatalf("unexpected encode error: %v", err)
+	}
+	if n != 10 || ft != FrameSpeech {
+		t.Errorf("got n=%d, ft=%v; want 10, FrameSpeech", n, ft)
+	}
+	if !panicked {
+		t.Error("expected diagnostic callback to have run")
+	}
+}
+
 func BenchmarkEncodeG729A(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Variant = VariantG729A

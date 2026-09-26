@@ -1,6 +1,7 @@
 package g729
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/selawe/go-g729/internal/bits"
@@ -115,7 +116,13 @@ func (d *decoder) Reset() {
 //   - 10 bytes: Normal active speech frame (80 bits)
 //   - 2 bytes:  Annex B SID frame (16 bits)
 //   - 0 bytes (or nil): Frame erasure / packet loss concealment (or untransmitted frame if in DTX)
-func (d *decoder) Decode(dst []int16, src []byte) error {
+func (d *decoder) Decode(dst []int16, src []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("g729: decode panic: %v", r)
+		}
+	}()
+
 	if len(dst) < params.L_FRAME {
 		return ErrInvalidOutputLen
 	}
@@ -198,7 +205,7 @@ func (d *decoder) Decode(dst []int16, src []byte) error {
 				d.oldT0 = t0
 			}
 
-			if t0 < params.PIT_MIN-1 {
+			if t0 < params.PIT_MIN {
 				t0 = params.PIT_MIN
 			}
 			if t0 > params.PIT_MAX {

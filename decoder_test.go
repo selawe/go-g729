@@ -277,6 +277,26 @@ func TestDecoderConcurrency(t *testing.T) {
 	wg.Wait()
 }
 
+func TestDecoderAdversarialPitchBounds(t *testing.T) {
+	dec := NewDecoder()
+	var dst [80]int16
+
+	// Bitstream with P1 = 0 and P2 = 0 (all zeros frame)
+	var zeroFrame [10]byte
+	if err := dec.Decode(dst[:], zeroFrame[:]); err != nil {
+		t.Fatalf("decode zero frame failed: %v", err)
+	}
+
+	// Bitstream with all 0xFF bytes
+	var ffFrame [10]byte
+	for i := range ffFrame {
+		ffFrame[i] = 0xFF
+	}
+	if err := dec.Decode(dst[:], ffFrame[:]); err != nil {
+		t.Fatalf("decode 0xFF frame failed: %v", err)
+	}
+}
+
 func BenchmarkDecodeSpeech(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.EnableVAD = false

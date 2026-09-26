@@ -177,8 +177,13 @@ writer, err := g729.NewWriter(bitstreamOut, g729.ProfileFast())
 if err != nil {
     log.Fatal(err)
 }
+// Opsi penanganan sisa frame parsial saat Close:
+// writer.SetFlushMode(g729.FlushZeroPad) // default: zero-pad ke 80 sampel
+// writer.SetFlushMode(g729.FlushDrop)    // drop sampel sisa tanpa frame akhir
+// writer.SetFlushMode(g729.FlushError)   // return ErrIncompleteFrame jika sisa
 _, err = io.Copy(writer, pcmReader)
-writer.Close() // Flush padding sisa frame
+writer.Close()
+fmt.Printf("Sampel padded: %d\n", writer.PaddedSamples())
 
 // Streaming Decode (G.729 bitstream → PCM bytes)
 reader := g729.NewReader(bitstreamIn)
@@ -193,10 +198,14 @@ import "github.com/selawe/go-g729/rtp"
 // Pack 2 frame menjadi satu RTP payload 20 ms
 payload, err := rtp.Pack([][]byte{frame1, frame2})
 
-// Unpack
+// Unpack standar (alokasi slice)
 frames, info, err := rtp.Unpack(payload)
 // info.Type: FrameSpeech / FrameSID / FrameSuppressed
 // info.NumFrames, info.DurationMs
+
+// UnpackInto: zero-allocation untuk jitter buffer VoIP throughput tinggi
+dst := make([][]byte, 2)
+n, info, err := rtp.UnpackInto(dst, payload) // 0 allocs/op!
 
 // Timestamp RTP
 ts := rtp.TimestampForFrame(baseTimestamp, frameIndex) // +80 per frame @ 8000 Hz
@@ -252,6 +261,9 @@ g729tool -bench -full -e speech.wav speech.g729
 | `-vad` | false | Aktifkan Annex B VAD/DTX/CNG |
 | `-loss` | 0.0 | Simulasi packet loss ratio saat decode (0.0–1.0) |
 | `-bench` | false | Tampilkan RTF dan statistik performa |
+
+> [!NOTE]
+> File bitstream `.g729` mentah (raw) mengasumsikan format CBR (kelipatan 10 byte per frame). Untuk aliran VBR Annex B (kombinasi frame speech 10-byte dan SID 2-byte), gunakan protokol ber-framing seperti RTP (`github.com/selawe/go-g729/rtp`).
 
 ---
 
