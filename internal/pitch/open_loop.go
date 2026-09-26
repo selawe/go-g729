@@ -101,7 +101,7 @@ func OpenLoopPitchCandidates(wsp []float32) (bestT, T1, T2, T3 int) {
 			T3 = candT3 + 1
 		}
 	}
-	if candT3-1 >= 80 {
+	if candT3-1 >= params.PIT_MIN {
 		p3Idx := offset - (candT3 - 1)
 		var sum float32
 		for j := 0; j < lFrame; j += 2 {

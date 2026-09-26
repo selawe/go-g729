@@ -70,33 +70,31 @@ func ClosedLoopPitch(excBuf []float32, offset int, xn, h []float32, t0Min, t0Max
 		return t0, 0
 	}
 
-	var tmpBuf [params.EXC_BUF_LEN]float32
-	copy(tmpBuf[:], excBuf[:offset+params.L_SUBFR])
+	var excTmp [params.L_SUBFR]float32
+	copy(excTmp[:], excBuf[offset:offset+params.L_SUBFR])
 
 	// Test fraction -1/3
-	InterpExcitation(tmpBuf[:], offset, t0, -1, params.L_SUBFR)
+	InterpExcitation(excBuf, offset, t0, -1, params.L_SUBFR)
 	var corrNeg float32
 	for j := 0; j < params.L_SUBFR; j++ {
-		corrNeg += dn[j] * tmpBuf[offset+j]
+		corrNeg += dn[j] * excBuf[offset+j]
 	}
 	if corrNeg > maxCorr {
 		maxCorr = corrNeg
 		pitFrac = -1
-		copy(excBuf[offset:offset+params.L_SUBFR], tmpBuf[offset:offset+params.L_SUBFR])
+		copy(excTmp[:], excBuf[offset:offset+params.L_SUBFR])
 	}
 
 	// Test fraction +1/3
-	InterpExcitation(tmpBuf[:], offset, t0, 1, params.L_SUBFR)
+	InterpExcitation(excBuf, offset, t0, 1, params.L_SUBFR)
 	var corrPos float32
 	for j := 0; j < params.L_SUBFR; j++ {
-		corrPos += dn[j] * tmpBuf[offset+j]
+		corrPos += dn[j] * excBuf[offset+j]
 	}
 	if corrPos > maxCorr {
 		pitFrac = 1
-		copy(excBuf[offset:offset+params.L_SUBFR], tmpBuf[offset:offset+params.L_SUBFR])
-	} else if pitFrac == 0 {
-		// Re-interpolate 0 if -1 and +1 weren't chosen
-		InterpExcitation(excBuf, offset, t0, 0, params.L_SUBFR)
+	} else {
+		copy(excBuf[offset:offset+params.L_SUBFR], excTmp[:])
 	}
 
 	return t0, pitFrac
