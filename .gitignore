@@ -1,5 +1,6 @@
 # Scratch and temporary files
 scratch/
+docs/G729_Release3/
 *.prof
 *.test
 *.exe
