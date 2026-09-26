@@ -61,8 +61,8 @@ type encoder struct {
 	smooth          int
 
 	// Annex B VAD / DTX state
-	vadState *vad.VADState
-	dtxState *vad.DTXEncoderState
+	vadState vad.VADState
+	dtxState vad.DTXEncoderState
 	pastVad  int
 	ppastVad int
 	seed     int16
@@ -74,9 +74,7 @@ type encoder struct {
 // NewEncoder creates and initializes a G.729 speech encoder according to the given Config.
 func NewEncoder(cfg Config) Encoder {
 	e := &encoder{
-		cfg:      cfg,
-		vadState: vad.NewVADState(),
-		dtxState: vad.NewDTXEncoderState(),
+		cfg: cfg,
 	}
 	e.Reset()
 	return e
