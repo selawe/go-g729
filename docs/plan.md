@@ -139,8 +139,10 @@ go-g729/
 │       └── cng.go                  # Comfort Noise Generation (SID frame decode)
 │
 ├── cmd/
-│   └── g729tool/
-│       └── main.go                 # CLI: encode/decode PCM ↔ G.729 bitstream file
+│   ├── g729tool/
+│   │   └── main.go                 # CLI: encode/decode PCM ↔ G.729 bitstream file
+│   └── benchcheck/
+│       └── main.go                 # CI gate: parse go test -bench output, fail jika ns/op > threshold
 │
 └── testdata/
     ├── itu/                        # ITU-T test vectors resmi
@@ -228,6 +230,13 @@ type Decoder interface {
 
 func NewEncoder(cfg Config) Encoder
 func NewDecoder(v Variant) Decoder
+
+// Sentinel errors
+var (
+    ErrInvalidInputLen  = errors.New("g729: src must be exactly 80 int16 samples")
+    ErrInvalidOutputLen = errors.New("g729: dst must have capacity >= 10 bytes (encoder) or 80 int16 (decoder)")
+    ErrInvalidFrameLen  = errors.New("g729: src length must be 0, 2, or 10 bytes")
+)
 ```
 
 ---
@@ -269,11 +278,12 @@ type encoder struct {
 type decoder struct {
     variant    Variant
     prevLSP    [LPOrder]float32             // LSP frame sebelumnya
-    lspMA      [4][LPOrder]float32          // MA predictor memory
+    lspMA      [4][LPOrder]float32          // MA predictor memory (identik dengan encoder)
     excBuf     [154 + FrameSamples]float32  // excitation buffer (past history + current)
     synthMem   [LPOrder]float32             // 1/A(z) synthesis filter memory
-    hpfState   [2]float32                   // output post-filter high-pass delay line
-    
+    hpfState   [2]float32                   // output high-pass filter delay line
+    gainPred   [4]float32                   // MA gain prediction memory — WAJIB ADA: DequantizeGain
+                                            // butuh 4 past quantized energies (domain log), sama seperti encoder
     // Post-filter memories (short-term formant + long-term pitch + tilt + AGC)
     pfSTMem    [LPOrder]float32             // post-filter short-term IIR memory
     pfLTMem    [143 + SubframeSamples]float32 // post-filter long-term past speech memory (pitch lag <= 143)
@@ -311,9 +321,11 @@ Fase 11: Integration + CLI      ← dep: Fase 9, 10
 
 - Init module `go mod init github.com/user/go-g729`
 - Salin semua tabel dari referensi ITU-T `tab_ld8a.c` sebagai Go float32 literals
-- `Pack`/`Unpack` bit-level untuk 80-bit frame
+- `Pack`/`Unpack` bit-level untuk 80-bit speech frame (10 byte)
+- `PackSID`/`UnpackSID` untuk SID frame (2 byte, 16 bit: predictor 1b + LSF1 5b + LSF2 4b + energy 5b + pad 1b)
+- `SIDParamSet` struct untuk parameter SID Annex B
 
-Test: round-trip `Pack(Unpack(rawBytes))` identik byte-for-byte.
+Test: round-trip `Pack(Unpack(rawBytes))` identik byte-for-byte; round-trip `PackSID(UnpackSID(sidBytes))` identik.
 
 ### Fase 2 — DSP Primitives
 **File:** `internal/dsp/filter.go`, `autocorr.go`, `levinson.go`
@@ -435,7 +447,7 @@ Urutan `Decode(dst []int16, src []byte) error` per frame:
        - Rekonstruksi eksitasi total $e(n) = g_p v(n) + g_c c(n)$.
        - `SynthesisFilter` $1/\hat{A}(z)$ dengan memori filter `synthMem`.
        - `PostFilter` (long-term pitch + short-term formant + tilt compensation + AGC).
-   - **Case Lain:** Return `ErrInvalidFrameLength`.
+   - **Case Lain:** Return `ErrInvalidFrameLen`.
 3. `HighPassFilter` output 2nd-order.
 4. Saturasi / clipping float32 ke rentang $[-32768, 32767]$ dan konversi ke `dst` int16.
 
@@ -1236,7 +1248,7 @@ func BenchmarkConcurrentEncode(b *testing.B) {
         b.Run(fmt.Sprintf("goroutines=%d", n), func(b *testing.B) {
             b.SetParallelism(n)
             b.RunParallel(func(pb *testing.PB) {
-                enc := NewEncoder(DefaultConfig()) // satu enc per goroutine
+                enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false}) // VAD off: deterministik 10 byte/frame
                 dst := make([]byte, 10)
                 inp := make([]int16, 80)
                 for pb.Next() {
