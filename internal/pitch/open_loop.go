@@ -88,43 +88,50 @@ func OpenLoopPitchCandidates(wsp []float32) (bestT, T1, T2, T3 int) {
 		}
 	}
 
-	// Test around T3: T3+1 and T3-1
-	p3Idx := offset - (T3 + 1)
-	if T3+1 < 143 {
+	// Test around T3: candT3+1 and candT3-1
+	candT3 := T3
+	if candT3+1 <= params.PIT_MAX {
+		p3Idx := offset - (candT3 + 1)
 		var sum float32
 		for j := 0; j < lFrame; j += 2 {
 			sum += wsp[offset+j] * wsp[p3Idx+j]
 		}
 		if sum > max3 {
 			max3 = sum
-			T3 = T3 + 1
+			T3 = candT3 + 1
 		}
 	}
-	p3Idx = offset - (T3 - 1)
-	if T3-1 >= 80 {
+	if candT3-1 >= 80 {
+		p3Idx := offset - (candT3 - 1)
 		var sum float32
 		for j := 0; j < lFrame; j += 2 {
 			sum += wsp[offset+j] * wsp[p3Idx+j]
 		}
 		if sum > max3 {
 			max3 = sum
-			T3 = T3 - 1
+			T3 = candT3 - 1
 		}
 	}
 
 	var energy3 float32 = 0.01
-	p3Idx = offset - T3
+	p3Idx := offset - T3
 	for j := 0; j < lFrame; j += 2 {
 		v := wsp[p3Idx+j]
 		energy3 += v * v
 	}
 	max3 /= float32(math.Sqrt(float64(energy3)))
 
-	// Test for pitch multiples
-	if abs(T2*2-T3) < 5 || abs(T2*3-T3) < 7 {
+	// Test for pitch multiples (cumulative additions per matching multiple)
+	if abs(T2*2-T3) < 5 {
 		max2 += max3 * 0.25
 	}
-	if abs(T1*2-T2) < 5 || abs(T1*3-T2) < 7 {
+	if abs(T2*3-T3) < 7 {
+		max2 += max3 * 0.25
+	}
+	if abs(T1*2-T2) < 5 {
+		max1 += max2 * 0.20
+	}
+	if abs(T1*3-T2) < 7 {
 		max1 += max2 * 0.20
 	}
 
