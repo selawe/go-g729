@@ -43,6 +43,23 @@ var InvMapGA = [8]uint8{5, 1, 7, 4, 2, 0, 6, 3}
 var MapGB = [16]uint8{4, 6, 0, 2, 12, 14, 8, 10, 15, 11, 9, 13, 7, 3, 1, 5}
 var InvMapGB = [16]uint8{2, 14, 3, 13, 0, 15, 1, 12, 6, 10, 7, 9, 4, 11, 5, 8}
 
+// GainCoef is the 2x2 matrix for preselection of gain codebook in G.729 / G.729A.
+var GainCoef = [2][2]float32{
+	{31.134575, 1.612322},
+	{0.481389, 0.053056},
+}
+
+// GainThr1 is the threshold array for preselection of codebook 1 (GA, 4 thresholds for 4 candidates out of 8).
+var GainThr1 = [4]float32{
+	0.659681, 0.755274, 1.207205, 1.987740,
+}
+
+// GainThr2 is the threshold array for preselection of codebook 2 (GB, 8 thresholds for 8 candidates out of 16).
+var GainThr2 = [8]float32{
+	0.429912, 0.494045, 0.618737, 0.650676,
+	0.717949, 0.770050, 0.850628, 0.932089,
+}
+
 // SIDGainTable contains the 32 quantized energy levels for Annex B SID frame (Q3 / 8.0).
 var SIDGainTable = [32]float32{
 	 0.2500000,

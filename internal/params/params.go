@@ -82,11 +82,17 @@ const (
 	GRID_POINTS = 50
 	LSP_GAP     = float32(0.005) // Minimum distance separation between adjacent LSFs (radians)
 
-	// Gain quantization limits.
-	GP_CLIP  = float32(0.95)   // Pitch gain clipping limit
-	GP_MIN   = float32(0.0)    // Minimum pitch gain
-	GP_MAX   = float32(1.2)    // Maximum pitch gain
-	MEAN_ENER = float32(36.0)  // Mean energy in dB for gain prediction
+	// Gain quantization limits and constants.
+	GP_CLIP    = float32(0.95)   // Pitch gain clipping limit
+	GP_MIN     = float32(0.0)    // Minimum pitch gain
+	GP_MAX     = float32(1.2)    // Maximum pitch gain
+	MEAN_ENER  = float32(36.0)   // Mean energy in dB for gain prediction
+	NCAN1      = 4               // Pre-selecting candidate count for GA
+	NCAN2      = 8               // Pre-selecting candidate count for GB
+	INV_COEF   = float32(-0.032623) // Inverse determinant factor for gain preselection
+	GPCLIP2    = float32(0.94)   // Pitch gain clip during taming
+	GP0999     = float32(0.9999) // Pitch gain threshold during taming
+	THRESH_ERR = float32(60000.0)// Error threshold for taming
 
 	// Annex B VAD / DTX / CNG constants.
 	HANG_COUNT = 8  // DTX hangover frames before entering inactive state
