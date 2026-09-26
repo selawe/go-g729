@@ -89,10 +89,9 @@ func QuantizeLSP(lsp [params.M]float32, freqPrev *[params.MA_NP][params.M]float3
 		for j := 0; j < 5; j++ {
 			buf[j] = tables.LSP_L1[bestL1][j] + tables.LSP_L2[bestL2][j]
 		}
+		Expand1(buf[:10], Gap1)
 
 		// Stage 2 higher search: 32 entries of 5 LSFs (weighted).
-		// Note: the upper search residual is computed directly from rbuf, not from buf[0..4],
-		// so buf[0..4] does not need intermediate expansion before this search.
 		var upResidual [5]float32
 		for j := 0; j < 5; j++ {
 			upResidual[j] = rbuf[j+5] - tables.LSP_L1[bestL1][j+5]
@@ -115,10 +114,7 @@ func QuantizeLSP(lsp [params.M]float32, freqPrev *[params.MA_NP][params.M]float3
 		for j := 5; j < params.M; j++ {
 			buf[j] = tables.LSP_L1[bestL1][j] + tables.LSP_L3[bestL3][j-5]
 		}
-		// Apply gap enforcement identically to the decoder (ITU-T G.729 reference: lsp_expand_1_2 twice).
-		// Expand12 covers all 10 adjacent pairs including the lower/upper boundary at index (4,5).
-		// This ensures encoder MA memory (freqPrev[0]) == decoder MA memory after each frame.
-		Expand12(buf[:10], Gap1)
+		Expand2(buf[:10], Gap1)
 		Expand12(buf[:10], Gap2)
 
 		candBuf[mode] = buf
@@ -143,8 +139,17 @@ func QuantizeLSP(lsp [params.M]float32, freqPrev *[params.MA_NP][params.M]float3
 	l2 = tindex1[bestMode]
 	l3 = tindex2[bestMode]
 
-	// Reconstruct quantized LSF
-	chosenBuf := candBuf[bestMode]
+	// Reconstruct quantized LSF according to ITU-T lsp_get_quant
+	var chosenBuf [params.M]float32
+	for j := 0; j < 5; j++ {
+		chosenBuf[j] = tables.LSP_L1[l1][j] + tables.LSP_L2[l2][j]
+	}
+	for j := 5; j < params.M; j++ {
+		chosenBuf[j] = tables.LSP_L1[l1][j] + tables.LSP_L3[l3][j-5]
+	}
+	Expand12(chosenBuf[:10], Gap1)
+	Expand12(chosenBuf[:10], Gap2)
+
 	var lsfQ [params.M]float32
 	for j := 0; j < params.M; j++ {
 		lsfQ[j] = chosenBuf[j] * tables.MAPredictorSum[bestMode][j]
