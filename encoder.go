@@ -240,8 +240,8 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	var ap1Full, ap2Full [2 * params.MP1]float32
 
 	if e.cfg.Variant == VariantG729A {
-		filter.WeightAz(e.aqT[:params.MP1], params.GAMMA1, e.apT[:params.MP1])
-		filter.WeightAz(e.aqT[params.MP1:], params.GAMMA1, e.apT[params.MP1:])
+		filter.WeightAz(e.aqT[:params.MP1], filter.Gamma1A, e.apT[:params.MP1])
+		filter.WeightAz(e.aqT[params.MP1:], filter.Gamma1A, e.apT[params.MP1:])
 
 		// Apply G.729A perceptual weighting filter W(z) = A(z) / A(z/0.75)
 		filter.ApplyPerceptualFilterA(

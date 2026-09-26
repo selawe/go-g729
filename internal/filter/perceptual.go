@@ -75,8 +75,15 @@ func ApplyPerceptualFilterA(wsp, speech, a, ap []float32, memW []float32) {
 	// 1. Inverse filter: res = speech * A(z)
 	dsp.Residue(wsp, speech, a, nil, false)
 
-	// 2. Synthesis filter: wsp = res * (1 / A(z/gamma1))
-	dsp.SynthesisFilter(wsp, wsp, ap, memW, true)
+	// 2. Compute Ap1(z) = Ap(z) * (1 - 0.7*z^-1)
+	var ap1 [params.MP1]float32
+	ap1[0] = 1.0
+	for i := 1; i <= params.M; i++ {
+		ap1[i] = ap[i] - 0.7*ap[i-1]
+	}
+
+	// 3. Synthesis filter: wsp = res * (1 / Ap1(z))
+	dsp.SynthesisFilter(wsp, wsp, ap1[:], memW, true)
 }
 
 // ApplyPerceptualFilterFull computes the weighted speech signal in Full G.729:
