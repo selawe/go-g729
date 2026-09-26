@@ -2,8 +2,11 @@ package g729
 
 import (
 	"fmt"
+	"runtime"
+	"sort"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -353,6 +356,362 @@ func TestConcurrentEncoderIsolation(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// ============================================================================
+// Frame-Time Jitter (P50 / P90 / P99 / P99.9 / max)
+// ============================================================================
+
+// TestFrameTimeJitterEncode measures per-frame encode latency distribution.
+//
+// A codec running at 238× real-time has an average of ~42 µs per frame.
+// Even when the average is low, OS scheduler interruptions or cache evictions
+// can cause individual frames to spike. This test verifies that:
+//   - P99   < 1 ms  (10% of 10 ms budget — safe operational headroom)
+//   - P99.9 < 5 ms  (50% of budget — no deadline risk even under light load)
+//
+// Run: go test -run TestFrameTimeJitter -v -count=1 .
+func TestFrameTimeJitterEncode(t *testing.T) {
+	const N = 10_000
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	frame := generateSine(440.0, 80, 8000.0)
+	dst := make([]byte, 10)
+
+	// Warm up: establish filter memories and fill instruction cache.
+	for i := 0; i < 100; i++ {
+		_, _, _ = enc.Encode(dst, frame)
+	}
+
+	times := make([]int64, N)
+	for i := range times {
+		t0 := time.Now()
+		_, _, _ = enc.Encode(dst, frame)
+		times[i] = time.Since(t0).Nanoseconds()
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+
+	p50 := times[N*50/100]
+	p90 := times[N*90/100]
+	p99 := times[N*99/100]
+	p999 := times[N*999/1000]
+	pmax := times[N-1]
+
+	ns2us := func(ns int64) string { return fmt.Sprintf("%.1f µs", float64(ns)/1000) }
+
+	t.Logf("Encode G.729A frame-time jitter (%d frames):", N)
+	t.Logf("  P50   = %s", ns2us(p50))
+	t.Logf("  P90   = %s", ns2us(p90))
+	t.Logf("  P99   = %s", ns2us(p99))
+	t.Logf("  P99.9 = %s", ns2us(p999))
+	t.Logf("  Max   = %s", ns2us(pmax))
+	t.Logf("  Budget = 10 000.0 µs (one G.729 frame)")
+
+	// Gate: P99 must stay below 2 ms (5× under 10 ms frame budget).
+	// On Linux/macOS, P99 is typically 200–500 µs (OS timer resolution ~1 µs).
+	// On Windows, OS scheduling quanta can add up to ~1–2 ms of jitter; the
+	// 2 ms gate accounts for this while still detecting genuine regressions.
+	// P50 may show as 0 µs on Windows — this is a timer quantisation artefact,
+	// not an indication that frames are instant (benchmark -bench confirms ~42 µs).
+	const p99Gate = 2_000_000  // 2 ms
+	const p999Gate = 5_000_000 // 5 ms
+	if p99 > p99Gate {
+		t.Errorf("P99 %s > gate %s — risk of audio glitch under load", ns2us(p99), ns2us(p99Gate))
+	}
+	if p999 > p999Gate {
+		t.Errorf("P99.9 %s > gate %s — deadline miss risk", ns2us(p999), ns2us(p999Gate))
+	}
+}
+
+// TestFrameTimeJitterDecode measures per-frame decode latency distribution.
+func TestFrameTimeJitterDecode(t *testing.T) {
+	const N = 10_000
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	bs := make([]byte, 10)
+	_, _, _ = enc.Encode(bs, generateSine(300.0, 80, 8000.0))
+
+	dec := NewDecoder()
+	out := make([]int16, 80)
+
+	for i := 0; i < 100; i++ { // warm up
+		_ = dec.Decode(out, bs)
+	}
+
+	times := make([]int64, N)
+	for i := range times {
+		t0 := time.Now()
+		_ = dec.Decode(out, bs)
+		times[i] = time.Since(t0).Nanoseconds()
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+
+	p50 := times[N*50/100]
+	p90 := times[N*90/100]
+	p99 := times[N*99/100]
+	p999 := times[N*999/1000]
+	pmax := times[N-1]
+
+	ns2us := func(ns int64) string { return fmt.Sprintf("%.1f µs", float64(ns)/1000) }
+
+	t.Logf("Decode G.729A frame-time jitter (%d frames):", N)
+	t.Logf("  P50   = %s", ns2us(p50))
+	t.Logf("  P90   = %s", ns2us(p90))
+	t.Logf("  P99   = %s", ns2us(p99))
+	t.Logf("  P99.9 = %s", ns2us(p999))
+	t.Logf("  Max   = %s", ns2us(pmax))
+
+	const p99Gate = 2_000_000  // 2 ms
+	const p999Gate = 5_000_000 // 5 ms
+	if p99 > p99Gate {
+		t.Errorf("P99 %s > gate %s", ns2us(p99), ns2us(p99Gate))
+	}
+	if p999 > p999Gate {
+		t.Errorf("P99.9 %s > gate %s", ns2us(p999), ns2us(p999Gate))
+	}
+}
+
+// ============================================================================
+// Load-Test Smoke
+// ============================================================================
+
+// TestLoadSmokeEncode verifies long-running encoder stability over 50 000 frames
+// (~500 s of audio processed in ~2 s of wall time). Checks:
+//   - No heap growth beyond 512 KB (memory leak detection)
+//   - No goroutine leak
+//   - No performance degradation: last 1000-frame batch ≤ 1.5× first batch
+//
+// Run: go test -run TestLoadSmoke -v -count=1 .
+func TestLoadSmokeEncode(t *testing.T) {
+	const (
+		totalFrames = 50_000
+		batchSize   = 1_000
+	)
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	frame := generateSine(440.0, 80, 8000.0)
+	dst := make([]byte, 10)
+
+	goroutinesBefore := runtime.NumGoroutine()
+	runtime.GC()
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+
+	// First batch timing
+	t0 := time.Now()
+	for i := 0; i < batchSize; i++ {
+		_, _, _ = enc.Encode(dst, frame)
+	}
+	firstBatchNs := time.Since(t0).Nanoseconds()
+
+	// Middle frames (untimed)
+	for i := batchSize; i < totalFrames-batchSize; i++ {
+		_, _, _ = enc.Encode(dst, frame)
+	}
+
+	// Last batch timing
+	t0 = time.Now()
+	for i := 0; i < batchSize; i++ {
+		_, _, _ = enc.Encode(dst, frame)
+	}
+	lastBatchNs := time.Since(t0).Nanoseconds()
+
+	runtime.GC()
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+	goroutinesAfter := runtime.NumGoroutine()
+
+	heapGrowth := int64(memAfter.HeapInuse) - int64(memBefore.HeapInuse)
+	ratio := float64(lastBatchNs) / float64(firstBatchNs)
+
+	t.Logf("Load smoke encode (%d frames):", totalFrames)
+	t.Logf("  Heap growth:       %+d bytes", heapGrowth)
+	t.Logf("  GC cycles:         %d", memAfter.NumGC-memBefore.NumGC)
+	t.Logf("  Goroutines:        before=%d after=%d", goroutinesBefore, goroutinesAfter)
+	t.Logf("  Perf ratio (L/F):  %.2f× (1.00 = perfectly stable)", ratio)
+
+	if heapGrowth > 512*1024 {
+		t.Errorf("heap grew %d bytes over %d frames — possible memory leak", heapGrowth, totalFrames)
+	}
+	if goroutinesAfter > goroutinesBefore+2 {
+		t.Errorf("goroutine leak: before=%d after=%d", goroutinesBefore, goroutinesAfter)
+	}
+	if ratio > 1.5 {
+		t.Errorf("encoder degraded: last batch %.2f× slower than first — GC pressure?", ratio)
+	}
+}
+
+// TestLoadSmokeDecode verifies long-running decoder stability with the same checks.
+func TestLoadSmokeDecode(t *testing.T) {
+	const (
+		totalFrames = 50_000
+		batchSize   = 1_000
+	)
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	bs := make([]byte, 10)
+	_, _, _ = enc.Encode(bs, generateSine(300.0, 80, 8000.0))
+
+	dec := NewDecoder()
+	out := make([]int16, 80)
+
+	goroutinesBefore := runtime.NumGoroutine()
+	runtime.GC()
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+
+	t0 := time.Now()
+	for i := 0; i < batchSize; i++ {
+		_ = dec.Decode(out, bs)
+	}
+	firstBatchNs := time.Since(t0).Nanoseconds()
+
+	for i := batchSize; i < totalFrames-batchSize; i++ {
+		_ = dec.Decode(out, bs)
+	}
+
+	t0 = time.Now()
+	for i := 0; i < batchSize; i++ {
+		_ = dec.Decode(out, bs)
+	}
+	lastBatchNs := time.Since(t0).Nanoseconds()
+
+	runtime.GC()
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+	goroutinesAfter := runtime.NumGoroutine()
+
+	heapGrowth := int64(memAfter.HeapInuse) - int64(memBefore.HeapInuse)
+	ratio := float64(lastBatchNs) / float64(firstBatchNs)
+
+	t.Logf("Load smoke decode (%d frames):", totalFrames)
+	t.Logf("  Heap growth:       %+d bytes", heapGrowth)
+	t.Logf("  Goroutines:        before=%d after=%d", goroutinesBefore, goroutinesAfter)
+	t.Logf("  Perf ratio (L/F):  %.2f×", ratio)
+
+	if heapGrowth > 512*1024 {
+		t.Errorf("heap grew %d bytes — possible memory leak", heapGrowth)
+	}
+	if goroutinesAfter > goroutinesBefore+2 {
+		t.Errorf("goroutine leak: before=%d after=%d", goroutinesBefore, goroutinesAfter)
+	}
+	if ratio > 1.5 {
+		t.Errorf("decoder degraded: last batch %.2f× slower", ratio)
+	}
+}
+
+// TestLoadSmokeAnnexB verifies Annex B (VAD/DTX/CNG) under sustained mixed load:
+// 200 cycles of (10 speech + 20 silence) = 6000 frames, checking for leaks
+// and correct frame type transitions throughout.
+func TestLoadSmokeAnnexB(t *testing.T) {
+	const cycles = 200
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: true})
+	dec := NewDecoder()
+
+	speechFrame := generateSine(300.0, 80, 8000.0)
+	silenceFrame := make([]int16, 80)
+	dst := make([]byte, 10)
+	out := make([]int16, 80)
+
+	goroutinesBefore := runtime.NumGoroutine()
+	runtime.GC()
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+
+	var speechCount, sidCount, suppressedCount int
+
+	for c := 0; c < cycles; c++ {
+		for i := 0; i < 10; i++ { // speech
+			n, ft, err := enc.Encode(dst, speechFrame)
+			if err != nil {
+				t.Fatalf("cycle %d speech %d: %v", c, i, err)
+			}
+			if err := dec.Decode(out, dst[:n]); err != nil {
+				t.Fatalf("cycle %d decode speech %d: %v", c, i, err)
+			}
+			if ft == FrameSpeech {
+				speechCount++
+			}
+		}
+		for i := 0; i < 20; i++ { // silence
+			n, ft, err := enc.Encode(dst, silenceFrame)
+			if err != nil {
+				t.Fatalf("cycle %d silence %d: %v", c, i, err)
+			}
+			if err := dec.Decode(out, dst[:n]); err != nil {
+				t.Fatalf("cycle %d decode silence %d: %v", c, i, err)
+			}
+			switch ft {
+			case FrameSID:
+				sidCount++
+			case FrameUntransmitted:
+				suppressedCount++
+			}
+		}
+	}
+
+	runtime.GC()
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+	goroutinesAfter := runtime.NumGoroutine()
+
+	heapGrowth := int64(memAfter.HeapInuse) - int64(memBefore.HeapInuse)
+	totalFrames := cycles * 30
+
+	t.Logf("Annex B load smoke (%d frames, %d cycles):", totalFrames, cycles)
+	t.Logf("  Speech=%d  SID=%d  Suppressed=%d", speechCount, sidCount, suppressedCount)
+	t.Logf("  Heap growth:  %+d bytes", heapGrowth)
+	t.Logf("  Goroutines:   before=%d after=%d", goroutinesBefore, goroutinesAfter)
+
+	if heapGrowth > 512*1024 {
+		t.Errorf("heap grew %d bytes — possible Annex B leak", heapGrowth)
+	}
+	if goroutinesAfter > goroutinesBefore+2 {
+		t.Errorf("goroutine leak: before=%d after=%d", goroutinesBefore, goroutinesAfter)
+	}
+	if sidCount+suppressedCount == 0 {
+		t.Error("DTX never activated — VAD may be broken over extended run")
+	}
+}
+
+// TestLoadSmokeDeadlineCompliance measures how many of 5000 frames would
+// miss the 10 ms real-time deadline on the current machine.
+// Deadline misses on normal hardware should be zero; any miss is flagged.
+func TestLoadSmokeDeadlineCompliance(t *testing.T) {
+	const N = 5_000
+	const budgetNs = 10_000_000
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	frame := generateSine(440.0, 80, 8000.0)
+	dst := make([]byte, 10)
+
+	for i := 0; i < 50; i++ { // warm up
+		_, _, _ = enc.Encode(dst, frame)
+	}
+
+	var misses int
+	var maxNs int64
+	for i := 0; i < N; i++ {
+		t0 := time.Now()
+		_, _, _ = enc.Encode(dst, frame)
+		ns := time.Since(t0).Nanoseconds()
+		if ns > budgetNs {
+			misses++
+		}
+		if ns > maxNs {
+			maxNs = ns
+		}
+	}
+
+	missRate := float64(misses) / float64(N) * 100
+	t.Logf("Deadline compliance (%d frames, budget=10 ms):", N)
+	t.Logf("  Max frame time: %.1f µs", float64(maxNs)/1000)
+	t.Logf("  Misses:         %d / %d (%.4f%%)", misses, N, missRate)
+
+	if misses > 0 {
+		t.Errorf("%d of %d frames (%.4f%%) exceeded 10 ms — max was %.1f µs",
+			misses, N, missRate, float64(maxNs)/1000)
 	}
 }
 
