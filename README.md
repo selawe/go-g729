@@ -1,6 +1,6 @@
 # go-g729
 
-High-performance, pure Go implementation of the **ITU-T G.729** speech codec, including **G.729 Annex A** (reduced-complexity ACELP), **Full G.729** (nested search and adaptive perceptual weighting), and **Annex B** (Voice Activity Detection / Discontinuous Transmission / Comfort Noise Generation).
+Implementasi **ITU-T G.729** speech codec dalam pure Go — mencakup **G.729 Annex A** (ACELP fast search), **Full G.729** (nested search + adaptive weighting), dan **Annex B** (VAD / DTX / CNG).
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/selawe/go-g729.svg)](https://pkg.go.dev/github.com/selawe/go-g729)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -11,219 +11,260 @@ High-performance, pure Go implementation of the **ITU-T G.729** speech codec, in
 
 ## Fitur Utama
 
-- **100% Pure Go (Zero CGO):** Kompilasi silang (*cross-compilation*) instan ke semua platform target: Windows, Linux, macOS, Android, iOS, ARM64 (Graviton, Apple Silicon), dan WebAssembly (WASM).
-- **Zero Allocations pada Hot Paths (`0 B/op`, `0 allocs/op`):** Seluruh loop encoding dan decoding bekerja sepenuhnya menggunakan buffer statis internal tanpa memicu alokasi heap atau overhead *Garbage Collector* (GC).
-- **Super Fast (> 200x Real-Time Encoding, > 1000x Real-Time Decoding):**
-  - Encoding 1 frame (10 ms audio) hanya membutuhkan **~38 µs** (G.729A) atau **~45 µs** (Full G.729).
-  - Decoding 1 frame hanya membutuhkan **~10 µs**.
-- **Kepatuhan Spesifikasi Resmi ITU-T:**
-  - **G.729A:** Algoritma pencarian ACELP berpasangan (*fast pair-wise heuristic search*) dan pembobotan perseptual teroptimasi.
-  - **Full G.729:** Pencarian 4-loop bersarang (*nested exhaustive search*) dan pembobotan adaptif spektral/harmonik.
-  - **Annex B (VAD / DTX / CNG):** Voice Activity Detection (energi, zero-crossing, spectral tilt, noise tracking), Discontinuous Transmission (SID frame 16-bit per RFC 3551), dan Comfort Noise Generator (Gaussian pseudo-random excitation).
-  - **Terverifikasi Vektor Uji Resmi ITU-T:** Decoder teruji menghasilkan **SNR > 20 dB** terhadap file referensi resmi `TEST.pst`.
-- **Packet Loss Concealment (PLC) Terintegrasi:** Rekonstruksi otomatis saat terjadi frame drop dengan ekstrapolasi lag pitch, pelemahan gain ($0.90$ pitch gain, $0.98$ codebook gain), eksitasi acak, dan muting bertahap pada kehilangan beruntun (> 60 ms).
-- **Thread-Safe & Aman dari Race Condition:** Semua state codec disimpan dalam struct instance mandiri (`Encoder` dan `Decoder`), tanpa state mutabel tingkat paket. Aman dijalankan bersamaan di ribuan goroutine paralel.
-- **Dukungan Format WAV & Raw PCM:** Terintegrasi deteksi dan parsing header RIFF/WAVE (16-bit linear PCM mono 8000 Hz) serta streaming raw byte.
+- **100% Pure Go, zero CGO** — cross-compile ke Windows, Linux, macOS, Android, ARM64, WASM tanpa toolchain tambahan.
+- **Zero allocation pada hot path** — semua buffer pre-allocated di struct; `Encode()` dan `Decode()` tidak menyentuh heap.
+- **G.729A (default):** ACELP fast pair-wise heuristic search — **42 µs/frame, 238× real-time**.
+- **Full G.729:** 4-loop nested exhaustive search — **60 µs/frame, 168× real-time**.
+- **Decoder:** **9 µs/frame, 1054× real-time** — diverifikasi **SNR > 20 dB** terhadap `TEST.pst` resmi ITU-T.
+- **Annex B lengkap:** VAD (energi + zero-crossing + spectral tilt + noise tracking), DTX (SID frame 2-byte per RFC 3551), CNG (Gaussian pseudo-random excitation + pitch + ACELP).
+- **Packet Loss Concealment (PLC):** Ekstrapolasi pitch, pelemahan gain bertahap, muting setelah 6+ frame beruntun hilang.
+- **RTP packetization** (RFC 3551) dan **SDP annexb negotiation** (RFC 4566) tersedia sebagai package terpisah.
+
+> Lihat [`docs/performance.md`](docs/performance.md) untuk angka benchmark lengkap beserta metodologi dan estimasi kapasitas.
 
 ---
 
-## Arsitektur Paket
+## Struktur Paket
 
 ```
 go-g729/
-├── types.go                 # Interface publik: Encoder, Decoder, Config, FrameType, dan Sentinel Errors
-├── encoder.go               # Implementasi pipeline assembly encoder G.729 / G.729A / Annex B
-├── decoder.go               # Implementasi pipeline assembly decoder, PLC, dan Comfort Noise
-├── encoder_test.go          # Unit & benchmark test suite untuk Encoder
-├── decoder_test.go          # Unit & benchmark test suite untuk Decoder
-├── g729_test.go             # End-to-end integration test & verifikasi vektor resmi ITU-T
+├── types.go            # Interface publik: Encoder, Decoder, Config, FrameType, sentinel errors
+├── encoder.go          # Pipeline encoder G.729 / G.729A / Annex B
+├── decoder.go          # Pipeline decoder, PLC, CNG
+├── rtp/                # Packetization G.729 per RFC 3551 (Pack, Unpack, TimestampForFrame)
+├── sdp/                # SDP annexb helpers per RFC 4566 (FMTPLine, ParseFMTP, NegotiateAnnexB)
 ├── cmd/
-│   └── g729tool/            # Aplikasi CLI mandiri untuk encode/decode file audio WAV/PCM
+│   ├── g729tool/       # CLI encode/decode file WAV/PCM
+│   └── benchcheck/     # CI gate: fail jika benchmark ns/op melebihi threshold
+├── docs/
+│   ├── performance.md  # Benchmark terukur: RTF, x-realtime, component breakdown
+│   └── plan.md         # Dokumen desain arsitektur lengkap
+├── testdata/
+│   ├── golden/         # Golden files regression test (bit-exact encoder/decoder output)
+│   └── itu/            # Letakkan ITU-T test vectors di sini (TEST.IN, TEST.BIT, TEST.pst)
 └── internal/
-    ├── bits/                # Serialisasi bitstream 80-bit speech frame & 16-bit SID frame (RFC 3551)
-    ├── codebook/            # Algebraic codebook search (fast & full), gain quantization, taming
-    ├── dsp/                 # High-pass filter 140Hz/100Hz, Levinson-Durbin, autocorrelation, konvolusi
-    ├── filter/              # Perceptual weighting filter W(z) dan adaptive postfilter (formant+tilt+AGC)
-    ├── lsp/                 # Konversi LPC↔LSP, stabilisasi LSF, kuantisasi vektor MA 2-tahap
-    ├── params/              # Konstanta numerik dan parameter algoritma ITU-T G.729
-    ├── pitch/               # Open-loop pitch, closed-loop fractional pitch (1/3), sinc interpolation, paritas
-    ├── tables/              # Tabel konstan lookup resmi ITU-T (lspcb, grid, gain, sinc, vad)
-    └── vad/                 # Annex B: VAD metric calculation, DTX state machine, dan CNG synthesis
+    ├── bits/           # Bitstream pack/unpack: 80-bit speech + 16-bit SID (RFC 3551)
+    ├── codebook/       # Algebraic codebook search (fast & full), gain quantization, taming
+    ├── dsp/            # HPF 140/100 Hz, Levinson-Durbin, autocorrelation, convolution
+    ├── filter/         # Perceptual weighting W(z), adaptive postfilter (formant+tilt+AGC)
+    ├── lsp/            # LPC↔LSP, stabilisasi LSF, kuantisasi vektor MA 2-tahap
+    ├── params/         # Konstanta ITU-T G.729
+    ├── pitch/          # Open-loop pitch, closed-loop fractional 1/3, sinc interpolation, paritas
+    ├── tables/         # Lookup tables: LSP codebook, gain, grid, sinc, VAD
+    └── vad/            # Annex B: VAD, DTX state machine, CNG synthesis
 ```
 
 ---
 
-## Performa & Benchmark
+## Performa
 
-Hasil benchmark diukur pada prosesor **AMD Ryzen 9 5900HX** (16 thread, Windows 11, Go 1.26):
+Diukur pada AMD Ryzen 9 5900HX, `GOMAXPROCS=1`, `-benchtime=5s`:
 
-| Operasi | Waktu / Frame (10 ms) | Alokasi Memori | Kecepatan Real-Time |
-|---|---|---|---|
-| **Encode G.729A (Fast)** | **38.6 µs** | **0 B/op, 0 allocs/op** | **~259x Real-Time** |
-| **Encode G.729A + Annex B VAD** | **37.4 µs** | **0 B/op, 0 allocs/op** | **~267x Real-Time** |
-| **Encode Full G.729** | **45.6 µs** | **0 B/op, 0 allocs/op** | **~219x Real-Time** |
-| **Decode Active Speech** | **10.5 µs** | **0 B/op, 0 allocs/op** | **~952x Real-Time** |
-| **Decode Comfort Noise (SID)** | **11.1 µs** | **0 B/op, 0 allocs/op** | **~900x Real-Time** |
-| **Decode Packet Loss (PLC)** | **8.3 µs** | **0 B/op, 0 allocs/op** | **~1204x Real-Time** |
+| Operasi | ns/frame | RTF | x-realtime | allocs/op |
+|---|---|---|---|---|
+| Encode G.729A | 42 086 | 0.0042 | **238×** | **0** |
+| Encode G.729A + Annex B | 42 086 | 0.0042 | **238×** | **0** |
+| Encode Full G.729 | 59 554 | 0.0060 | **168×** | **0** |
+| Decode (speech) | 9 488 | 0.00095 | **1 054×** | **0** |
+| Decode (SID/CNG) | 11 748 | 0.0012 | **851×** | **0** |
+| Decode (PLC) | 8 883 | 0.00089 | **1 126×** | **0** |
 
-> [!NOTE]
-> Semua fungsi pemrosesan utama memiliki footprint memori konstan tanpa alokasi dinamis pada hot path, sehingga aman digunakan pada aplikasi throughput tinggi seperti VoIP server, SIP gateway, dan WebRTC media bridge.
+RTF < 0.01 berarti >100× headroom dari kebutuhan real-time. Satu core dapat menangani **>100 stream G.729A serentak** dengan safety margin 2×.
 
 ---
 
 ## Instalasi
 
-### Sebagai Library Go
 ```bash
+# Sebagai library
 go get github.com/selawe/go-g729
-```
 
-### Sebagai CLI Tool
-```bash
+# Sebagai CLI tool
 go install github.com/selawe/go-g729/cmd/g729tool@latest
 ```
 
 ---
 
-## Penggunaan Library
+## Penggunaan
 
-### 1. Encoding Audio PCM ke G.729
-Input audio harus berupa **16-bit linear PCM mono dengan sample rate 8000 Hz** (80 sampel = 10 ms per frame).
+### Encoding
 
 ```go
 package main
 
 import (
-	"fmt"
-	"log"
-
-	"github.com/selawe/go-g729"
+    "fmt"
+    "log"
+    g729 "github.com/selawe/go-g729"
 )
 
 func main() {
-	// Konfigurasi standar: G.729A dengan Annex B VAD aktif
-	cfg := g729.DefaultConfig()
-	enc := g729.NewEncoder(cfg)
+    // DefaultConfig: G.729A + Annex B VAD aktif
+    enc := g729.NewEncoder(g729.DefaultConfig())
 
-	// Buffer input (80 int16) dan buffer output bitstream (minimal 10 byte)
-	pcmFrame := make([]int16, 80)
-	bitstream := make([]byte, 10)
+    pcm := make([]int16, 80) // 80 sampel = 10 ms @ 8 kHz
+    dst := make([]byte, 10)
 
-	// Isi pcmFrame dari stream audio Anda...
+    // Isi pcm dari sumber audio Anda...
 
-	n, frameType, err := enc.Encode(bitstream, pcmFrame)
-	if err != nil {
-		log.Fatalf("encode error: %v", err)
-	}
+    n, frameType, err := enc.Encode(dst, pcm)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	switch frameType {
-	case g729.FrameSpeech:
-		// Active speech: kirim 10 byte bitstream
-		fmt.Printf("Speech frame: %d bytes\n", n)
-	case g729.FrameSID:
-		// Comfort Noise SID: kirim 2 byte bitstream (Annex B)
-		fmt.Printf("SID frame: %d bytes\n", n)
-	case g729.FrameUntransmitted:
-		// Periode hening: tidak ada byte yang perlu dikirim (0 byte)
-		fmt.Println("Untransmitted silence frame")
-	}
+    switch frameType {
+    case g729.FrameSpeech:
+        fmt.Printf("Speech: kirim %d byte\n", n) // 10 byte
+    case g729.FrameSID:
+        fmt.Printf("SID: kirim %d byte\n", n)    // 2 byte (Annex B)
+    case g729.FrameUntransmitted:
+        fmt.Println("Silence: jangan kirim paket") // 0 byte
+    }
 }
 ```
 
-### 2. Decoding G.729 ke Audio PCM
-Decoder secara otomatis mendeteksi ukuran frame yang diterima:
-- `10 byte`: Frame percakapan normal
-- `2 byte`: Frame SID (Comfort Noise)
-- `0 byte` atau `nil`: Frame hilang (*packet loss*) atau hening untransmitted
+### Decoding
 
 ```go
-package main
+dec := g729.NewDecoder()
+pcm := make([]int16, 80)
 
+// Frame speech normal (10 byte)
+dec.Decode(pcm, frame10bytes)
+
+// SID / comfort noise (2 byte)
+dec.Decode(pcm, frame2bytes)
+
+// Packet loss → Packet Loss Concealment otomatis
+dec.Decode(pcm, nil)
+```
+
+### RTP Packetization
+
+```go
+import "github.com/selawe/go-g729/rtp"
+
+// Pack 2 frame menjadi satu RTP payload 20 ms
+payload, err := rtp.Pack([][]byte{frame1, frame2})
+
+// Unpack
+frames, info, err := rtp.Unpack(payload)
+// info.Type: FrameSpeech / FrameSID / FrameSuppressed
+// info.NumFrames, info.DurationMs
+
+// Timestamp RTP
+ts := rtp.TimestampForFrame(baseTimestamp, frameIndex) // +80 per frame @ 8000 Hz
+```
+
+### SDP Negotiation (Annex B)
+
+```go
 import (
-	"fmt"
-	"log"
-
-	"github.com/selawe/go-g729"
+    g729 "github.com/selawe/go-g729"
+    "github.com/selawe/go-g729/sdp"
 )
 
-func main() {
-	dec := g729.NewDecoder()
+// Build SDP offer
+cfg := g729.DefaultConfig() // EnableVAD: true
+line := sdp.FMTPLine(18, cfg)       // "a=fmtp:18 annexb=yes"
+rmap := sdp.RTPMapLine(18)          // "a=rtpmap:18 G729/8000"
 
-	decodedPCM := make([]int16, 80)
+// Parse SDP answer dari remote peer
+cfg, err := sdp.ConfigFromFMTP("annexb=no")
+enc := g729.NewEncoder(cfg) // CBR 8 kbps sesuai negosiasi
 
-	// Contoh 1: Decode frame 10 byte normal
-	var frameBytes [10]byte
-	if err := dec.Decode(decodedPCM, frameBytes[:]); err != nil {
-		log.Fatalf("decode speech error: %v", err)
-	}
-
-	// Contoh 2: Decode frame hilang (Packet Loss Concealment / PLC)
-	// Masukkan nil atau slice kosong untuk memicu PLC
-	if err := dec.Decode(decodedPCM, nil); err != nil {
-		log.Fatalf("decode PLC error: %v", err)
-	}
-
-	fmt.Println("Berhasil merekonstruksi 80 sampel PCM.")
-}
+// Negotiate offer/answer: "no" wins
+agreed, _ := sdp.NegotiateAnnexB("annexb=yes", "annexb=no") // → false
 ```
 
 ---
 
-## Aplikasi CLI (`g729tool`)
-
-`g729tool` adalah program baris perintah serbaguna untuk encoding dan decoding file audio PCM mentah maupun file WAV standar.
-
-### Syntax
-```text
-g729tool [opsi] <input_file> <output_file>
-```
-
-### Opsi CLI
-| Flag | Tipe | Default | Keterangan |
-|---|---|---|---|
-| `-e` | bool | false | Mode Encode (PCM/WAV $\to$ G.729 bitstream) |
-| `-d` | bool | false | Mode Decode (G.729 bitstream $\to$ PCM/WAV) |
-| `-full` | bool | false | Menggunakan Full G.729 (nested search) alih-alih G.729A |
-| `-vad` | bool | false | Mengaktifkan Annex B VAD/DTX/CNG |
-| `-loss` | float | 0.0 | Simulasi rasio packet loss saat decode (0.0 s/d 1.0) |
-| `-wav` | bool | false | Memaksa format output berupa WAV saat decode |
-| `-bench` | bool | false | Menampilkan statistik kecepatan dan Real-Time Factor (RTF) |
-
-### Contoh Penggunaan CLI
+## CLI Tool (`g729tool`)
 
 ```bash
-# 1. Encode file WAV ke G.729 bitstream (8 kbps CBR)
+# Encode WAV ke G.729 (CBR 8 kbps)
 g729tool -e input.wav output.g729
 
-# 2. Encode dengan Annex B Voice Activity Detection (VBR dengan hening terkompresi)
+# Encode dengan Annex B VAD (DTX/CNG aktif)
 g729tool -e -vad input.wav output.g729
 
-# 3. Decode file G.729 kembali ke WAV 16-bit 8000 Hz
+# Decode ke WAV
 g729tool -d input.g729 output.wav
 
-# 4. Decode dengan simulasi 5% packet loss concealment (PLC)
-g729tool -d -loss 0.05 input.g729 reconstructed.wav
+# Decode dengan simulasi 5% packet loss
+g729tool -d -loss 0.05 input.g729 output.wav
 
-# 5. Mengukur benchmark performa encode dengan Full G.729
+# Benchmark dengan Full G.729
 g729tool -bench -full -e speech.wav speech.g729
 ```
 
+| Flag | Default | Keterangan |
+|---|---|---|
+| `-e` | false | Mode encode (PCM/WAV → bitstream) |
+| `-d` | false | Mode decode (bitstream → PCM/WAV) |
+| `-full` | false | Gunakan Full G.729 (nested search) |
+| `-vad` | false | Aktifkan Annex B VAD/DTX/CNG |
+| `-loss` | 0.0 | Simulasi packet loss ratio saat decode (0.0–1.0) |
+| `-bench` | false | Tampilkan RTF dan statistik performa |
+
 ---
 
-## Menjalankan Pengujian
+## Testing
 
-Jalankan seluruh test suite unit dan integrasi:
 ```bash
-go test -v ./...
+# Semua unit test dan integration test
+go test ./...
+
+# Dengan race detector
+go test -race ./...
+
+# Fuzz testing (decoder robustness terhadap input arbitrer)
+go test -fuzz=FuzzDecode$ -fuzztime=5m .
+go test -fuzz=FuzzEncode -fuzztime=5m .
+
+# Benchmark + validasi zero alloc
+go test -bench=. -benchmem -benchtime=5s -cpu=1 .
+
+# Regenerate golden files setelah perubahan encoder yang intentional
+go test -run TestGolden -update-golden .
+
+# CI performance gate
+go test -bench=. -benchtime=3s -cpu=1 . > bench.txt
+go run ./cmd/benchcheck \
+    --file=bench.txt \
+    --gate="BenchmarkEncodeG729A=55000" \
+    --gate="BenchmarkDecodeSpeech=15000"
+
+# Verifikasi ITU-T compliance (butuh test vectors di testdata/itu/)
+# Download dari: https://www.itu.int/net/itu-t/sigdb/genaudio/
+go test -run TestDecoderOfficialTestVector -v .
 ```
 
-Jalankan benchmark performa dan verifikasi nol alokasi heap:
-```bash
-go test -run=^$ -bench Benchmark -benchmem .
+---
+
+## Catatan Thread Safety
+
+Setiap `Encoder` dan `Decoder` adalah **tidak goroutine-safe**. Untuk memproses banyak stream audio secara paralel, buat satu instance per stream:
+
+```go
+// BENAR: satu encoder per goroutine/stream
+for _, stream := range streams {
+    go func(s Stream) {
+        enc := g729.NewEncoder(g729.DefaultConfig())
+        // proses stream s...
+    }(stream)
+}
+
+// SALAH: berbagi satu encoder antar goroutine
+enc := g729.NewEncoder(g729.DefaultConfig())
+go func() { enc.Encode(...) }() // DATA RACE
+go func() { enc.Encode(...) }()
 ```
+
+Constructor `NewEncoder` dan `NewDecoder` ringan (< 1 µs, 0 alloc) sehingga tidak perlu pooling.
 
 ---
 
 ## Lisensi
 
-Proyek ini dilisensikan di bawah lisensi MIT. Tabel konstanta algoritma diturunkan sesuai spesifikasi teknis rekomendasi ITU-T G.729.
+MIT. Tabel konstanta algoritma diturunkan dari spesifikasi teknis ITU-T G.729.
