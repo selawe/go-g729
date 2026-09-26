@@ -222,8 +222,19 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 //   - 2 bytes (SID):        requires len(dst) >= 1
 //   - n×10 bytes (speech):  requires len(dst) >= n
 //
-// For each frame i, if dst[i] has capacity >= frameSize, payload bytes are copied
-// into dst[i][:frameSize]. Otherwise, dst[i] is set directly to payload's sub-slice.
+// Two-mode aliasing behaviour, chosen per-slot by capacity:
+//
+//   - COPY mode (dst[i] has cap >= FrameBytes): payload is copied into dst[i][:frameSize].
+//     dst[i] is fully independent of payload afterwards. Safe to mutate or reuse
+//     payload immediately. This is the recommended mode — pre-allocate a fixed
+//     [n][10]byte and slice into it (see jitter.Buffer for reference usage).
+//
+//   - ZERO-COPY mode (dst[i] cap < FrameBytes): dst[i] is set to a sub-slice of
+//     payload directly. NO COPY IS PERFORMED. This is dangerous — dst[i]'s
+//     backing array IS payload. If the caller later reuses the payload buffer
+//     (e.g. for the next network read), dst[i] will silently observe the new
+//     bytes. Only use zero-copy mode if payload has a stable lifetime that
+//     outlives dst[i] usage.
 //
 // Returns the number of frames populated in dst, PayloadInfo, and an error if dst
 // is too short or payload length is invalid.
