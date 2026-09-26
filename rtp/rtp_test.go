@@ -311,3 +311,81 @@ func BenchmarkUnpackInto(b *testing.B) {
 		_, _, _ = rtp.UnpackInto(dst, payload)
 	}
 }
+
+func TestPackInto(t *testing.T) {
+	f1 := make([]byte, 10)
+	f2 := make([]byte, 10)
+	for i := range f1 {
+		f1[i] = byte(i)
+		f2[i] = byte(i + 10)
+	}
+
+	// 1. Pack 2 speech frames
+	dst := make([]byte, 20)
+	n, err := rtp.PackInto(dst, [][]byte{f1, f2})
+	if err != nil {
+		t.Fatalf("PackInto speech: %v", err)
+	}
+	if n != 20 || !bytes.Equal(dst[:10], f1) || !bytes.Equal(dst[10:20], f2) {
+		t.Errorf("PackInto mismatch")
+	}
+
+	// 2. Buffer too small
+	shortDst := make([]byte, 10)
+	_, err = rtp.PackInto(shortDst, [][]byte{f1, f2})
+	if err == nil {
+		t.Fatal("expected error for short buffer, got nil")
+	}
+
+	// 3. SID frame
+	sid := []byte{0x12, 0x34}
+	sidDst := make([]byte, 2)
+	n, err = rtp.PackInto(sidDst, [][]byte{sid})
+	if err != nil {
+		t.Fatalf("PackInto SID: %v", err)
+	}
+	if n != 2 || !bytes.Equal(sidDst, sid) {
+		t.Errorf("PackInto SID mismatch")
+	}
+
+	// 4. Empty frames
+	_, err = rtp.PackInto(dst, nil)
+	if err != rtp.ErrEmptyPayload {
+		t.Errorf("expected ErrEmptyPayload, got %v", err)
+	}
+}
+
+func TestFramesPerPacketForMTU(t *testing.T) {
+	// MTU 1500 (standard Ethernet): (1500 - 40) / 10 = 146 frames
+	if got := rtp.FramesPerPacketForMTU(1500); got != 146 {
+		t.Errorf("FramesPerPacketForMTU(1500) = %d, want 146", got)
+	}
+
+	// MTU 576 (typical dialup/WAN): (576 - 40) / 10 = 53 frames
+	if got := rtp.FramesPerPacketForMTU(576); got != 53 {
+		t.Errorf("FramesPerPacketForMTU(576) = %d, want 53", got)
+	}
+
+	// MTU 60: (60 - 40) / 10 = 2 frames
+	if got := rtp.FramesPerPacketForMTU(60); got != 2 {
+		t.Errorf("FramesPerPacketForMTU(60) = %d, want 2", got)
+	}
+
+	// MTU 45: available 5 < 10 -> 0 frames
+	if got := rtp.FramesPerPacketForMTU(45); got != 0 {
+		t.Errorf("FramesPerPacketForMTU(45) = %d, want 0", got)
+	}
+}
+
+func BenchmarkPackInto(b *testing.B) {
+	f1 := make([]byte, 10)
+	f2 := make([]byte, 10)
+	frames := [][]byte{f1, f2}
+	dst := make([]byte, 20)
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = rtp.PackInto(dst, frames)
+	}
+}

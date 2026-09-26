@@ -102,48 +102,87 @@ type PayloadInfo struct {
 //   - SID frame: exactly one 2-byte frame; must not be mixed with speech frames.
 //   - Suppressed frames: caller must not call Pack for suppressed frames —
 //     simply skip sending an RTP packet.
+// HeaderOverheadIPv4RTP is the typical size in bytes of IPv4 (20B) + UDP (8B) + RTP (12B) headers.
+const HeaderOverheadIPv4RTP = 40
+
+// FramesPerPacketForMTU calculates the maximum number of G.729 speech frames (10 ms / 10 bytes each)
+// that fit within the specified path MTU, accounting for standard IPv4/UDP/RTP headers (40 bytes).
+// Returns 0 if mtu is too small to carry at least one 10-byte frame.
+func FramesPerPacketForMTU(mtu int) int {
+	available := mtu - HeaderOverheadIPv4RTP
+	if available < FrameBytes {
+		return 0
+	}
+	return available / FrameBytes
+}
+
+// PackInto bundles one or more G.729 encoded frames into dst without heap allocation.
+// dst must have capacity >= the total packed payload size (2 bytes for SID, len(frames)*10 for speech).
 //
-// Returns ErrEmptyPayload if frames is empty.
-// Returns ErrInvalidPayload if frames contain mixed or invalid lengths.
-func Pack(frames [][]byte) ([]byte, error) {
+// Returns the number of bytes written to dst, or an error if frames are invalid or dst is too small.
+func PackInto(dst []byte, frames [][]byte) (int, error) {
 	if len(frames) == 0 {
-		return nil, ErrEmptyPayload
+		return 0, ErrEmptyPayload
 	}
 
-	// Detect frame type from the first frame
 	first := len(frames[0])
 	if first != FrameBytes && first != SIDBytes {
-		return nil, fmt.Errorf("%w: first frame has %d bytes (want %d or %d)",
+		return 0, fmt.Errorf("%w: first frame has %d bytes (want %d or %d)",
 			ErrInvalidPayload, first, FrameBytes, SIDBytes)
 	}
 
 	if first == SIDBytes {
-		// SID payload: exactly one 2-byte frame
 		if len(frames) != 1 {
-			return nil, fmt.Errorf("%w: SID payload must contain exactly 1 frame, got %d",
+			return 0, fmt.Errorf("%w: SID payload must contain exactly 1 frame, got %d",
 				ErrInvalidPayload, len(frames))
 		}
-		out := make([]byte, SIDBytes)
-		copy(out, frames[0])
-		return out, nil
+		if len(dst) < SIDBytes {
+			return 0, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), SIDBytes)
+		}
+		copy(dst[:SIDBytes], frames[0])
+		return SIDBytes, nil
 	}
 
-	// Speech payload: concatenate all 10-byte frames
-	total := 0
+	total := len(frames) * FrameBytes
+	if len(dst) < total {
+		return 0, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), total)
+	}
+
 	for i, f := range frames {
 		if len(f) != FrameBytes {
-			return nil, fmt.Errorf("%w: frame %d has %d bytes (want %d for speech)",
+			return 0, fmt.Errorf("%w: frame %d has %d bytes (want %d for speech)",
 				ErrInvalidPayload, i, len(f), FrameBytes)
 		}
-		total += len(f)
+		copy(dst[i*FrameBytes:(i+1)*FrameBytes], f)
+	}
+
+	return total, nil
+}
+
+// Pack bundles one or more G.729 encoded frames into a single allocated RTP payload.
+//
+// Rules:
+//   - Speech frames: all must be exactly 10 bytes. Multiple frames are
+//     concatenated; the payload length will be n×10.
+//   - SID frame: exactly one 2-byte frame; must not be mixed with speech frames.
+//   - Suppressed frames: caller must not call Pack for suppressed frames —
+//     simply skip sending an RTP packet.
+//
+// For zero-allocation packing in high-throughput loops, use PackInto.
+func Pack(frames [][]byte) ([]byte, error) {
+	if len(frames) == 0 {
+		return nil, ErrEmptyPayload
+	}
+	total := len(frames) * FrameBytes
+	if len(frames[0]) == SIDBytes {
+		total = SIDBytes
 	}
 	out := make([]byte, total)
-	pos := 0
-	for _, f := range frames {
-		copy(out[pos:], f)
-		pos += len(f)
+	n, err := PackInto(out, frames)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	return out[:n], nil
 }
 
 // Unpack parses a G.729 RTP payload into individual frame byte slices.
