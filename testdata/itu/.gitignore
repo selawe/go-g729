@@ -1,0 +1,20 @@
+# ITU-T G.729 official test vectors are large binary files not committed to the repo.
+# Download the G.729 Software Package from ITU-T and place files here:
+#
+#   TEST.IN   - 16-bit linear PCM input speech (16-bit, 8 kHz, mono)
+#   TEST.BIT  - Reference encoder bitstream (82 words per frame, little-endian)
+#   TEST.pst  - Reference decoder PCM output (post-filtered)
+#
+# Source: https://www.itu.int/net/itu-t/sigdb/genaudio/audioform-g.aspx?val=10000050
+#
+# All binary vector files are excluded from version control:
+*.bit
+*.BIT
+*.pcm
+*.PCM
+*.in
+*.IN
+*.out
+*.OUT
+*.pst
+*.PST

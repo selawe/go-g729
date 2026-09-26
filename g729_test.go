@@ -9,6 +9,28 @@ import (
 	"testing"
 )
 
+// ituVectorPath resolves the path to an ITU-T test vector file by checking
+// the canonical testdata/itu/ location first, then the legacy docs/ location,
+// returning the first path that exists. Returns the empty string if not found.
+//
+// To use the ITU-T official test vectors, place them in testdata/itu/:
+//
+//	testdata/itu/TEST.IN   – 16-bit PCM input speech
+//	testdata/itu/TEST.BIT  – reference encoder bitstream
+//	testdata/itu/TEST.pst  – reference decoder PCM output
+func ituVectorPath(filename string) string {
+	candidates := []string{
+		filepath.Join("testdata", "itu", filename),
+		filepath.Join("docs", "G729_Release3", "g729AnnexA", "test_vectors", filename),
+	}
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
 // readPCMFile reads 16-bit little-endian linear PCM samples from file.
 func readPCMFile(path string) ([]int16, error) {
 	data, err := os.ReadFile(path)
@@ -103,11 +125,11 @@ func computeSNR(orig, rec []int16) (overallSNR, segSNR float64) {
 }
 
 func TestEndToEndOfficialSpeechVector(t *testing.T) {
-	// Look for official ITU-T test speech vector
-	testPath := filepath.Join("docs", "G729_Release3", "g729AnnexA", "test_vectors", "TEST.IN")
+	// Look for official ITU-T test speech vector (testdata/itu/ or docs/ fallback)
+	testPath := ituVectorPath("TEST.IN")
 	pcm, err := readPCMFile(testPath)
-	if err != nil {
-		t.Logf("Official test vector not accessible at %s (%v), generating synthetic speech test signal", testPath, err)
+	if testPath == "" || err != nil {
+		t.Logf("Official test vector not found in testdata/itu/ or docs/ — generating synthetic test signal")
 		// Generate 200 frames (2.0s) of harmonic multi-tone speech-like signal
 		pcm = make([]int16, 16000)
 		for i := 0; i < len(pcm); i++ {
@@ -125,10 +147,11 @@ func TestEndToEndOfficialSpeechVector(t *testing.T) {
 		t.Fatalf("Insufficient speech data: %d frames", totalFrames)
 	}
 
-	pstPath := filepath.Join("docs", "G729_Release3", "g729AnnexA", "test_vectors", "TEST.pst")
-	if refOut, err := readPCMFile(pstPath); err == nil {
-		snrRef, segRef := computeSNR(pcm, refOut)
-		t.Logf("Official TEST.IN vs Official TEST.pst: Overall SNR = %.2f dB, Segmental SNR = %.2f dB", snrRef, segRef)
+	if pstPath := ituVectorPath("TEST.pst"); pstPath != "" {
+		if refOut, err := readPCMFile(pstPath); err == nil {
+			snrRef, segRef := computeSNR(pcm, refOut)
+			t.Logf("Official TEST.IN vs Official TEST.pst: Overall SNR = %.2f dB, Segmental SNR = %.2f dB", snrRef, segRef)
+		}
 	}
 
 	// 1. Test G.729A (Fast) Round-Trip
@@ -352,16 +375,22 @@ func TestEndToEndPacketLossConcealment(t *testing.T) {
 }
 
 func TestDecoderOfficialTestVector(t *testing.T) {
-	bitPath := filepath.Join("docs", "G729_Release3", "g729AnnexA", "test_vectors", "TEST.BIT")
-	pstPath := filepath.Join("docs", "G729_Release3", "g729AnnexA", "test_vectors", "TEST.pst")
+	bitPath := ituVectorPath("TEST.BIT")
+	if bitPath == "" {
+		t.Skip("TEST.BIT not found in testdata/itu/ or docs/ — place ITU-T test vectors in testdata/itu/")
+	}
+	pstPath := ituVectorPath("TEST.pst")
+	if pstPath == "" {
+		t.Skip("TEST.pst not found in testdata/itu/ or docs/")
+	}
 
 	rawBits, err := os.ReadFile(bitPath)
 	if err != nil {
-		t.Skipf("TEST.BIT not found: %v", err)
+		t.Skipf("cannot read TEST.BIT: %v", err)
 	}
 	refPcm, err := readPCMFile(pstPath)
 	if err != nil {
-		t.Skipf("TEST.pst not found: %v", err)
+		t.Skipf("cannot read TEST.pst: %v", err)
 	}
 
 	packedFrames := convertITUBitstreamToPacked(rawBits)
