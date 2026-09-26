@@ -148,6 +148,47 @@ func TestConfigFromFMTP(t *testing.T) {
 	}
 }
 
+func TestConfigFromFMTP_AnnexA(t *testing.T) {
+	cfg, err := sdp.ConfigFromFMTP("annexa=no; annexb=yes")
+	if err != nil {
+		t.Fatalf("ConfigFromFMTP: %v", err)
+	}
+	if cfg.Variant != g729.VariantG729 {
+		t.Errorf("expected VariantG729 for annexa=no, got %v", cfg.Variant)
+	}
+	if !cfg.EnableVAD {
+		t.Error("expected EnableVAD=true for annexb=yes")
+	}
+
+	line := sdp.FMTPLine(18, cfg)
+	if !strings.Contains(line, "annexa=no") {
+		t.Errorf("FMTPLine for VariantG729 should contain annexa=no, got: %s", line)
+	}
+}
+
+func TestNegotiateAnnexA(t *testing.T) {
+	cases := []struct {
+		offer, answer string
+		want          bool
+	}{
+		{"annexa=yes", "annexa=yes", true},
+		{"annexa=yes", "annexa=no", false},
+		{"annexa=no", "annexa=yes", false},
+		{"annexa=no", "annexa=no", false},
+		{"", "", true},
+	}
+	for _, c := range cases {
+		got, err := sdp.NegotiateAnnexA(c.offer, c.answer)
+		if err != nil {
+			t.Errorf("NegotiateAnnexA(%q, %q): %v", c.offer, c.answer, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("NegotiateAnnexA(%q, %q) = %v, want %v", c.offer, c.answer, got, c.want)
+		}
+	}
+}
+
 func TestNegotiateAnnexB(t *testing.T) {
 	cases := []struct {
 		offer, answer string

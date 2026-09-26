@@ -48,6 +48,9 @@ const (
 	// ClockRate is the G.729 RTP clock rate in Hz.
 	ClockRate = 8000
 
+	// DefaultAnnexA is the default annexa value per RFC 3551 (true = G.729 Annex A).
+	DefaultAnnexA = true
+
 	// DefaultAnnexB is the default annexb value per RFC 3551 (true = enabled).
 	DefaultAnnexB = true
 )
@@ -70,12 +73,16 @@ func RTPMapLine(payloadType int) string {
 
 // FMTPLine builds the a=fmtp SDP attribute line for G.729 from a Config.
 //
-//	a=fmtp:18 annexb=yes   (EnableVAD=true)
-//	a=fmtp:18 annexb=no    (EnableVAD=false)
+//	a=fmtp:18 annexb=yes              (G.729A, EnableVAD=true)
+//	a=fmtp:18 annexb=no               (G.729A, EnableVAD=false)
+//	a=fmtp:18 annexa=no; annexb=yes   (Full G.729, EnableVAD=true)
 func FMTPLine(payloadType int, cfg g729.Config) string {
 	annexb := "no"
 	if cfg.EnableVAD {
 		annexb = "yes"
+	}
+	if cfg.Variant == g729.VariantG729 {
+		return fmt.Sprintf("a=fmtp:%d annexa=no; annexb=%s", payloadType, annexb)
 	}
 	return fmt.Sprintf("a=fmtp:%d annexb=%s", payloadType, annexb)
 }
@@ -107,11 +114,29 @@ func MediaSection(port, payloadType int, cfg g729.Config) string {
 //
 // Unknown additional parameters are silently ignored to allow forward
 // compatibility with future G.729 extensions.
+// ParseFMTP parses a G.729 fmtp attribute value string (the part after
+// "a=fmtp:<pt> ") and returns the annexb flag.
+//
+// For parsing both annexa and annexb parameters, see ParseFMTPParams.
 func ParseFMTP(fmtp string) (annexb bool, err error) {
+	_, annexb, err = ParseFMTPParams(fmtp)
+	return annexb, err
+}
+
+// ParseFMTPParams parses both annexa and annexb parameters from a G.729 fmtp attribute value string.
+//
+// Defaults per RFC 3551:
+//   - annexa: DefaultAnnexA (true = G.729 Annex A)
+//   - annexb: DefaultAnnexB (true = VAD/DTX enabled)
+//
+// Unknown additional parameters are silently ignored to allow forward
+// compatibility with future G.729 extensions.
+func ParseFMTPParams(fmtp string) (annexa bool, annexb bool, err error) {
+	annexa = DefaultAnnexA
 	annexb = DefaultAnnexB
 	fmtp = strings.TrimSpace(fmtp)
 	if fmtp == "" {
-		return annexb, nil
+		return annexa, annexb, nil
 	}
 
 	for _, param := range strings.Split(fmtp, ";") {
@@ -122,12 +147,20 @@ func ParseFMTP(fmtp string) (annexb bool, err error) {
 		kv := strings.SplitN(param, "=", 2)
 		key := strings.ToLower(strings.TrimSpace(kv[0]))
 		if len(kv) < 2 {
-			// Bare parameter without value — treat as unknown, ignore
 			continue
 		}
 		val := strings.ToLower(strings.TrimSpace(kv[1]))
 
 		switch key {
+		case "annexa":
+			switch val {
+			case "yes", "1", "true":
+				annexa = true
+			case "no", "0", "false":
+				annexa = false
+			default:
+				return false, false, fmt.Errorf("%w: annexa=%q (want yes|no|1|0)", ErrInvalidValue, val)
+			}
 		case "annexb":
 			switch val {
 			case "yes", "1", "true":
@@ -135,13 +168,13 @@ func ParseFMTP(fmtp string) (annexb bool, err error) {
 			case "no", "0", "false":
 				annexb = false
 			default:
-				return false, fmt.Errorf("%w: annexb=%q (want yes|no|1|0)", ErrInvalidValue, val)
+				return false, false, fmt.Errorf("%w: annexb=%q (want yes|no|1|0)", ErrInvalidValue, val)
 			}
 		default:
 			// Unknown parameters: forward-compatible ignore
 		}
 	}
-	return annexb, nil
+	return annexa, annexb, nil
 }
 
 // ParseFMTPLine parses a full a=fmtp SDP line and returns the annexb flag.
@@ -179,20 +212,38 @@ func ParseFMTPLine(line string, payloadType int) (annexb bool, err error) {
 	return ParseFMTP(line)
 }
 
-// ConfigFromFMTP derives a g729.Config from an fmtp attribute value string.
-// The Variant field defaults to VariantG729A; callers may override it.
+// ConfigFromFMTP derives a g729.Config from an fmtp attribute value string,
+// configuring Variant (G729A vs G729 Full via annexa) and EnableVAD (via annexb).
 //
-//	cfg, err := sdp.ConfigFromFMTP("annexb=yes")
-//	cfg.Variant = g729.VariantG729   // override if needed
+//	cfg, err := sdp.ConfigFromFMTP("annexa=no; annexb=no")
 func ConfigFromFMTP(fmtp string) (g729.Config, error) {
-	annexb, err := ParseFMTP(fmtp)
+	annexa, annexb, err := ParseFMTPParams(fmtp)
 	if err != nil {
 		return g729.Config{}, err
 	}
+	variant := g729.VariantG729A
+	if !annexa {
+		variant = g729.VariantG729
+	}
 	return g729.Config{
-		Variant:   g729.VariantG729A,
+		Variant:   variant,
 		EnableVAD: annexb,
 	}, nil
+}
+
+// NegotiateAnnexA negotiates the G.729 vs G.729A variant between offer and answer
+// per RFC 3551 §4.5.6. Both sides must agree to use Annex A; if either side specifies
+// annexa=no, full-complexity G.729 is used (returns false).
+func NegotiateAnnexA(offerFMTP, answerFMTP string) (bool, error) {
+	offerA, _, err := ParseFMTPParams(offerFMTP)
+	if err != nil {
+		return true, fmt.Errorf("offer: %w", err)
+	}
+	answerA, _, err := ParseFMTPParams(answerFMTP)
+	if err != nil {
+		return true, fmt.Errorf("answer: %w", err)
+	}
+	return offerA && answerA, nil
 }
 
 // NegotiateAnnexB implements the SDP offer/answer annexb negotiation rule
@@ -217,14 +268,22 @@ func NegotiateAnnexB(offerFMTP, answerFMTP string) (bool, error) {
 }
 
 // ConfigFromNegotiation builds a Config from a completed SDP offer/answer
-// exchange. The result is safe to pass directly to NewEncoder and NewDecoder.
+// exchange, negotiating both annexa (algorithm variant) and annexb (VAD).
 func ConfigFromNegotiation(offerFMTP, answerFMTP string) (g729.Config, error) {
+	annexa, err := NegotiateAnnexA(offerFMTP, answerFMTP)
+	if err != nil {
+		return g729.Config{}, err
+	}
 	annexb, err := NegotiateAnnexB(offerFMTP, answerFMTP)
 	if err != nil {
 		return g729.Config{}, err
 	}
+	variant := g729.VariantG729A
+	if !annexa {
+		variant = g729.VariantG729
+	}
 	return g729.Config{
-		Variant:   g729.VariantG729A,
+		Variant:   variant,
 		EnableVAD: annexb,
 	}, nil
 }
