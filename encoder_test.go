@@ -230,6 +230,29 @@ func TestOnDiagnosticPanicSafety(t *testing.T) {
 	}
 }
 
+func TestEncoderStats(t *testing.T) {
+	cfg := ProfileFast()
+	enc := NewEncoder(cfg)
+
+	frame := generateSine(1000.0, 80, 8000.0)
+	var dst [10]byte
+
+	for i := 0; i < 10; i++ {
+		_, _, _ = enc.Encode(dst[:], frame)
+	}
+
+	st := enc.Stats()
+	if st.TotalFrames != 10 || st.SpeechFrames != 10 || st.BytesEmitted != 100 {
+		t.Errorf("unexpected encoder stats: %+v", st)
+	}
+
+	enc.Reset()
+	stReset := enc.Stats()
+	if stReset.TotalFrames != 0 || stReset.BytesEmitted != 0 {
+		t.Errorf("stats not cleared on reset: %+v", stReset)
+	}
+}
+
 func BenchmarkEncodeG729A(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Variant = VariantG729A

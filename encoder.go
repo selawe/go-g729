@@ -72,6 +72,9 @@ type encoder struct {
 
 	// Encoded parameter set for current frame
 	paramSet bits.ParamSet
+
+	// Cumulative runtime telemetry stats
+	stats EncoderStats
 }
 
 // NewEncoder creates and initializes a G.729 speech encoder according to the given Config.
@@ -86,6 +89,7 @@ func NewEncoder(cfg Config) Encoder {
 // Reset clears all encoder state, filter delay lines, and history buffers to their initial state.
 func (e *encoder) Reset() {
 	e.frameCount = 0
+	e.stats = EncoderStats{}
 	e.hpfState.Reset()
 
 	for i := range e.oldSpeech {
@@ -256,10 +260,15 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 				ClippedCount: clippedCount,
 			})
 
+			e.stats.TotalFrames++
+			e.stats.ClippedSamples += int64(clippedCount)
 			if sid.Transmitted {
+				e.stats.SIDFrames++
+				e.stats.BytesEmitted += params.BYTES_PER_SID
 				copy(dst[:params.BYTES_PER_SID], sid.Packed[:])
 				return params.BYTES_PER_SID, FrameSID, nil
 			}
+			e.stats.Untransmitted++
 			return 0, FrameUntransmitted, nil
 		}
 
@@ -574,7 +583,17 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 		ClippedCount: clippedCount,
 	})
 
+	e.stats.TotalFrames++
+	e.stats.SpeechFrames++
+	e.stats.BytesEmitted += params.BYTES_PER_FRAME
+	e.stats.ClippedSamples += int64(clippedCount)
+
 	return params.BYTES_PER_FRAME, FrameSpeech, nil
+}
+
+// Stats returns cumulative operational telemetry for this encoder.
+func (e *encoder) Stats() EncoderStats {
+	return e.stats
 }
 
 // invokeDiagnostic calls the optional OnDiagnostic callback, recovering from any panic.

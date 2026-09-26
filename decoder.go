@@ -66,6 +66,9 @@ type decoder struct {
 
 	// Consecutive lost frames counter for progressive muting.
 	badFrames int
+
+	// Cumulative runtime telemetry stats
+	stats DecoderStats
 }
 
 // NewDecoder creates and initializes a new G.729 / G.729A speech decoder.
@@ -77,6 +80,7 @@ func NewDecoder() Decoder {
 
 // Reset clears all internal state, delay lines, and history buffers to their initial reset state.
 func (d *decoder) Reset() {
+	d.stats = DecoderStats{}
 	for i := range d.oldExc {
 		d.oldExc[i] = 0
 	}
@@ -137,6 +141,9 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 		// 1. Normal Active Speech Frame (10 bytes = 80 bits)
 		// --------------------------------------------------------------------
 		d.badFrames = 0
+		d.stats.TotalFrames++
+		d.stats.SpeechFrames++
+		d.stats.LastBFICount = 0
 		var paramSet bits.ParamSet
 		bits.Unpack(&paramSet, src[:10])
 
@@ -287,6 +294,9 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 		// 2. Annex B SID Frame (2 bytes = 16 bits)
 		// --------------------------------------------------------------------
 		d.badFrames = 0
+		d.stats.TotalFrames++
+		d.stats.SIDFrames++
+		d.stats.LastBFICount = 0
 		var sidBytes [2]byte
 		copy(sidBytes[:], src[:2])
 		sidParams := vad.UnpackSID(sidBytes)
@@ -321,8 +331,10 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 		// --------------------------------------------------------------------
 		// 3. Untransmitted DTX Frame or Packet Loss Concealment (PLC)
 		// --------------------------------------------------------------------
+		d.stats.TotalFrames++
 		if d.pastFTyp == 0 {
 			// Untransmitted comfort noise frame in DTX
+			d.stats.Untransmitted++
 			sidParams := vad.SIDParams{Transmitted: false}
 			var aT [2 * params.MP1]float32
 			d.cngState.DecCNG(false, d.sidSav, sidParams, d.oldExc[:], excOffset, &d.lspOld, &aT, &d.freqPrev)
@@ -344,6 +356,7 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 		} else {
 			// Packet Loss Concealment (PLC) for active speech
 			d.badFrames++
+			d.stats.ConcealedFrames++
 
 			// Extrapolate LSPs from previous good frame
 			lspNew := lsp.DequantizeLSPExt(0, 0, 0, 0, true, &d.prevLSF, &d.prevMA, &d.freqPrev)
@@ -446,4 +459,10 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 	}
 
 	return nil
+}
+
+// Stats returns cumulative operational and PLC telemetry for this decoder.
+func (d *decoder) Stats() DecoderStats {
+	d.stats.LastBFICount = d.badFrames
+	return d.stats
 }

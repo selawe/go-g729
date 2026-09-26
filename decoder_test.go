@@ -297,6 +297,41 @@ func TestDecoderAdversarialPitchBounds(t *testing.T) {
 	}
 }
 
+func TestDecoderStats(t *testing.T) {
+	dec := NewDecoder()
+	var dst [80]int16
+	var speechFrame [10]byte
+	var sidFrame [2]byte
+
+	// 5 speech frames
+	for i := 0; i < 5; i++ {
+		_ = dec.Decode(dst[:], speechFrame[:])
+	}
+	// 3 PLC erasures (following active speech)
+	for i := 0; i < 3; i++ {
+		_ = dec.Decode(dst[:], nil)
+	}
+	// 2 SID frames
+	for i := 0; i < 2; i++ {
+		_ = dec.Decode(dst[:], sidFrame[:])
+	}
+	// 2 Untransmitted DTX silence frames (following SID)
+	for i := 0; i < 2; i++ {
+		_ = dec.Decode(dst[:], nil)
+	}
+
+	st := dec.Stats()
+	if st.TotalFrames != 12 || st.SpeechFrames != 5 || st.ConcealedFrames != 3 || st.SIDFrames != 2 || st.Untransmitted != 2 {
+		t.Errorf("unexpected decoder stats: %+v", st)
+	}
+
+	dec.Reset()
+	stReset := dec.Stats()
+	if stReset.TotalFrames != 0 || stReset.ConcealedFrames != 0 {
+		t.Errorf("decoder stats not cleared on reset: %+v", stReset)
+	}
+}
+
 func BenchmarkDecodeSpeech(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.EnableVAD = false

@@ -124,6 +124,26 @@ var (
 	ErrInvalidFrameLen = errors.New("g729: src length must be 0, 2, or 10 bytes")
 )
 
+// EncoderStats contains cumulative runtime metrics for an Encoder instance.
+type EncoderStats struct {
+	TotalFrames    int   // Total frames processed
+	SpeechFrames   int   // Active speech frames encoded (10 bytes)
+	SIDFrames      int   // Comfort noise SID frames emitted (2 bytes)
+	Untransmitted  int   // DTX suppressed frames (0 bytes)
+	BytesEmitted   int64 // Total bitstream bytes written (speech + SID)
+	ClippedSamples int64 // Cumulative number of soft-clipped/saturated input samples
+}
+
+// DecoderStats contains cumulative runtime metrics for a Decoder instance.
+type DecoderStats struct {
+	TotalFrames     int // Total frames received and decoded
+	SpeechFrames    int // Active speech frames decoded
+	SIDFrames       int // Comfort noise SID frames processed
+	ConcealedFrames int // Lost speech frames concealed via PLC
+	Untransmitted   int // Untransmitted DTX silence frames
+	LastBFICount    int // Consecutive bad frame (BFI) count currently active
+}
+
 // Encoder defines the interface for compressing 8 kHz 16-bit linear PCM audio into G.729 bitstream frames.
 // An Encoder instance is NOT safe for concurrent use across multiple goroutines; each audio stream
 // must have its own Encoder instance.
@@ -138,6 +158,9 @@ type Encoder interface {
 	//   - frameType: type of the produced frame
 	//   - err: nil on success, or an error if buffer lengths are invalid
 	Encode(dst []byte, src []int16) (n int, frameType FrameType, err error)
+
+	// Stats returns cumulative operational telemetry for this encoder.
+	Stats() EncoderStats
 
 	// Reset clears all internal state, delay lines, and history buffers to their initial reset state.
 	Reset()
@@ -154,6 +177,9 @@ type Decoder interface {
 	//
 	// Returns nil on success, or an error if dst or src lengths are invalid.
 	Decode(dst []int16, src []byte) error
+
+	// Stats returns cumulative operational and PLC telemetry for this decoder.
+	Stats() DecoderStats
 
 	// Reset clears all internal state, delay lines, and history buffers to their initial reset state.
 	Reset()
