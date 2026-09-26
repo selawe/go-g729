@@ -231,6 +231,9 @@ func ConfigFromFMTP(fmtp string) (g729.Config, error) {
 // NegotiateAnnexA negotiates the G.729 vs G.729A variant between offer and answer
 // per RFC 3551 §4.5.6. Both sides must agree to use Annex A; if either side specifies
 // annexa=no, full-complexity G.729 is used (returns false).
+//
+// On parse error the returned bool is false — callers must always check err first
+// before using the result. This matches NegotiateAnnexB behaviour.
 func NegotiateAnnexA(offerFMTP, answerFMTP string) (bool, error) {
 	offerA, _, err := ParseFMTPParams(offerFMTP)
 	if err != nil {
