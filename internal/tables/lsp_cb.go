@@ -212,3 +212,9 @@ var L1Subset = [32]uint8{96, 52, 20, 54, 86, 114, 82, 68, 36, 121, 48, 92, 18, 1
 var L2Subset = [16]uint8{31, 21, 9, 3, 10, 2, 19, 26, 4, 3, 11, 29, 15, 27, 21, 12}
 
 var L3Subset = [16]uint8{16, 1, 0, 0, 8, 25, 22, 20, 19, 23, 20, 31, 4, 31, 20, 31}
+
+// LSPOldReset contains the initial unquantized/quantized LSP vector at codec reset.
+var LSPOldReset = [10]float32{
+	0.9595, 0.8413, 0.6549, 0.4154, 0.1423,
+	-0.1423, -0.4154, -0.6549, -0.8413, -0.9595,
+}

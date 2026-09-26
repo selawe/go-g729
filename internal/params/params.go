@@ -93,6 +93,8 @@ const (
 	GPCLIP2    = float32(0.94)   // Pitch gain clip during taming
 	GP0999     = float32(0.9999) // Pitch gain threshold during taming
 	THRESH_ERR = float32(60000.0) // Error threshold for taming
+	SHARPMIN   = float32(0.2)     // Minimum pitch sharpening factor
+	SHARPMAX   = float32(0.7945)  // Maximum pitch sharpening factor
 
 	// Annex B VAD / DTX / CNG constants.
 	NP         = 12              // Increased LPC order for Annex B VAD autocorrelation
