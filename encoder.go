@@ -44,6 +44,7 @@ type encoder struct {
 	memW0   [params.M]float32
 	memZero [params.M]float32
 	memErr  [params.M]float32
+	memSyn  [params.M]float32
 
 	// Pitch sharpening factor
 	sharp float32
@@ -115,6 +116,7 @@ func (e *encoder) Reset() {
 		e.memW0[i] = 0.0
 		e.memZero[i] = 0.0
 		e.memErr[i] = 0.0
+		e.memSyn[i] = 0.0
 	}
 
 	e.sharp = params.SHARPMIN
@@ -236,27 +238,58 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	e.lspOld = lspNew
 	e.lspOldQ = lspNewQ
 
-	// 9. Weighted speech computation & Open-loop pitch search
+	// 9. LP residual & Weighted speech computation
+	speechOffset := params.L_TOTAL - params.L_FRAME - params.L_LOOKAHEAD // 120
+
+	// Pre-compute LP residual exc for both subframes into e.oldExc with exact past speech history
+	dsp.Residue(
+		e.oldExc[params.L_PAST_EXC:params.L_PAST_EXC+params.L_SUBFR],
+		speech[:params.L_SUBFR],
+		e.aqT[:params.MP1],
+		e.oldSpeech[speechOffset-params.M:speechOffset],
+		false,
+	)
+	dsp.Residue(
+		e.oldExc[params.L_PAST_EXC+params.L_SUBFR:params.L_PAST_EXC+params.L_FRAME],
+		speech[params.L_SUBFR:params.L_FRAME],
+		e.aqT[params.MP1:],
+		speech[params.L_SUBFR-params.M:params.L_SUBFR],
+		false,
+	)
+
 	var ap1Full, ap2Full [2 * params.MP1]float32
 
 	if e.cfg.Variant == VariantG729A {
 		filter.WeightAz(e.aqT[:params.MP1], filter.Gamma1A, e.apT[:params.MP1])
 		filter.WeightAz(e.aqT[params.MP1:], filter.Gamma1A, e.apT[params.MP1:])
 
-		// Apply G.729A perceptual weighting filter W(z) = A(z) / A(z/0.75)
-		filter.ApplyPerceptualFilterA(
+		// Filter wsp directly from exc using Ap1(z) = Ap(z) * (1 - 0.7*z^-1)
+		var ap1 [params.MP1]float32
+
+		// Subframe 0 wsp
+		ap1[0] = 1.0
+		for i := 1; i <= params.M; i++ {
+			ap1[i] = e.apT[i] - 0.7*e.apT[i-1]
+		}
+		dsp.SynthesisFilter(
 			e.oldWsp[params.PIT_MAX:params.PIT_MAX+params.L_SUBFR],
-			speech[:params.L_SUBFR],
-			e.aqT[:params.MP1],
-			e.apT[:params.MP1],
+			e.oldExc[params.L_PAST_EXC:params.L_PAST_EXC+params.L_SUBFR],
+			ap1[:],
 			e.memW[:],
+			true,
 		)
-		filter.ApplyPerceptualFilterA(
+
+		// Subframe 1 wsp
+		ap1[0] = 1.0
+		for i := 1; i <= params.M; i++ {
+			ap1[i] = e.apT[params.MP1+i] - 0.7*e.apT[params.MP1+i-1]
+		}
+		dsp.SynthesisFilter(
 			e.oldWsp[params.PIT_MAX+params.L_SUBFR:params.PIT_MAX+params.L_FRAME],
-			speech[params.L_SUBFR:params.L_FRAME],
-			e.aqT[params.MP1:],
-			e.apT[params.MP1:],
+			e.oldExc[params.L_PAST_EXC+params.L_SUBFR:params.L_PAST_EXC+params.L_FRAME],
+			ap1[:],
 			e.memW[:],
+			true,
 		)
 	} else {
 		// Full G.729: compute gamma1, gamma2 dynamically using PercVar
@@ -276,19 +309,36 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 		filter.WeightAz(aSubfr1[:], gamma1[0], ap1Full[:params.MP1])
 		filter.WeightAz(aSubfr2[:], gamma1[1], ap1Full[params.MP1:])
 
-		filter.ApplyPerceptualFilterFull(
+		// Subframe 0 wsp
+		dsp.Residue(
 			e.oldWsp[params.PIT_MAX:params.PIT_MAX+params.L_SUBFR],
 			speech[:params.L_SUBFR],
 			ap1Full[:params.MP1],
+			e.oldSpeech[speechOffset-params.M:speechOffset],
+			false,
+		)
+		dsp.SynthesisFilter(
+			e.oldWsp[params.PIT_MAX:params.PIT_MAX+params.L_SUBFR],
+			e.oldWsp[params.PIT_MAX:params.PIT_MAX+params.L_SUBFR],
 			ap2Full[:params.MP1],
 			e.memW[:],
+			true,
 		)
-		filter.ApplyPerceptualFilterFull(
+
+		// Subframe 1 wsp
+		dsp.Residue(
 			e.oldWsp[params.PIT_MAX+params.L_SUBFR:params.PIT_MAX+params.L_FRAME],
 			speech[params.L_SUBFR:params.L_FRAME],
 			ap1Full[params.MP1:],
+			speech[params.L_SUBFR-params.M:params.L_SUBFR],
+			false,
+		)
+		dsp.SynthesisFilter(
+			e.oldWsp[params.PIT_MAX+params.L_SUBFR:params.PIT_MAX+params.L_FRAME],
+			e.oldWsp[params.PIT_MAX+params.L_SUBFR:params.PIT_MAX+params.L_FRAME],
 			ap2Full[params.MP1:],
 			e.memW[:],
+			true,
 		)
 	}
 
@@ -338,13 +388,12 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 
 		// 10b. Target vector xn for pitch search
 		if e.cfg.Variant == VariantG729A {
-			dsp.Residue(e.oldExc[excOffset:excOffset+params.L_SUBFR], speech[iSubfr:iSubfr+params.L_SUBFR], curAq, nil, false)
 			dsp.SynthesisFilter(xn[:], e.oldExc[excOffset:excOffset+params.L_SUBFR], curAp, e.memW0[:], false)
 		} else {
+			curAp1 := ap1Full[subfrIdx*params.MP1 : (subfrIdx+1)*params.MP1]
 			curAp2 := ap2Full[subfrIdx*params.MP1 : (subfrIdx+1)*params.MP1]
-			dsp.Residue(e.oldExc[excOffset:excOffset+params.L_SUBFR], speech[iSubfr:iSubfr+params.L_SUBFR], curAq, nil, false)
 			dsp.SynthesisFilter(errorBuf[:], e.oldExc[excOffset:excOffset+params.L_SUBFR], curAq, e.memErr[:], false)
-			dsp.Residue(xn[:], errorBuf[:], curAp, nil, false)
+			dsp.Residue(xn[:], errorBuf[:], curAp1, e.memErr[:], false)
 			dsp.SynthesisFilter(xn[:], xn[:], curAp2, e.memW0[:], false)
 		}
 
@@ -385,8 +434,8 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 
 		// 10e. Pitch taming
 		taming := codebook.TestErr(t0, t0Frac, &e.excErr)
-		if taming == 1 && gainPit > params.GPCLIP2 {
-			gainPit = params.GPCLIP2
+		if taming == 1 && gainPit > params.GP_CLIP {
+			gainPit = params.GP_CLIP
 		}
 
 		// 10f. Target for algebraic codebook search
@@ -447,9 +496,11 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 			e.memW0[j] = xn[i] - qGainPit*y1[i] - qGainCode*y2[i]
 		}
 		if e.cfg.Variant == VariantG729 {
+			var synth [params.L_SUBFR]float32
+			dsp.SynthesisFilter(synth[:], e.oldExc[excOffset:excOffset+params.L_SUBFR], curAq, e.memSyn[:], true)
 			for i := params.L_SUBFR - params.M; i < params.L_SUBFR; i++ {
 				j := i - (params.L_SUBFR - params.M)
-				e.memErr[j] = errorBuf[i] - e.oldExc[excOffset+i]
+				e.memErr[j] = speech[iSubfr+i] - synth[i]
 			}
 		}
 	}
