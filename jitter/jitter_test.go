@@ -222,6 +222,37 @@ func TestJitterBufferConcurrency(t *testing.T) {
 	}
 }
 
+func TestMaxDelayEnforcement(t *testing.T) {
+	// MaxDelay = 30ms → 3 slots ahead of playout is the limit.
+	jb := jitter.New(jitter.Config{
+		TargetDelay: 10 * time.Millisecond,
+		MaxDelay:    30 * time.Millisecond,
+	})
+
+	// Push seq=100 → establishes playoutSeq=100 and initializes.
+	if err := jb.Push(100, 0, make([]byte, 10)); err != nil {
+		t.Fatalf("Push 100: %v", err)
+	}
+
+	// Drain the prebuffer so we exit buffering mode.
+	jb.Flush()
+	_, _ = jb.Pop() // pop seq=100, playoutSeq=101
+
+	// seq=103 → diff=2 (< 3), accepted.
+	if err := jb.Push(103, 240, make([]byte, 10)); err != nil {
+		t.Fatalf("Push 103: %v", err)
+	}
+	// seq=110 → diff=9 (>= 3), rejected as too-far-in-future.
+	if err := jb.Push(110, 800, make([]byte, 10)); err != nil {
+		t.Fatalf("Push 110 returned err: %v", err)
+	}
+
+	stats := jb.Stats()
+	if stats.LatePackets != 1 {
+		t.Errorf("expected 1 LatePackets (from seq=110 rejection), got %d", stats.LatePackets)
+	}
+}
+
 func TestPopIntoBoundsCheck(t *testing.T) {
 	jb := jitter.New(jitter.Config{TargetDelay: 10 * time.Millisecond})
 	_ = jb.Push(0, 0, make([]byte, 10))

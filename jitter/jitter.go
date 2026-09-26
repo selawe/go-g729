@@ -72,6 +72,7 @@ type Buffer struct {
 
 	targetDelay time.Duration
 	maxDelay    time.Duration
+	maxSlots    int
 
 	initialized bool
 	buffering   bool
@@ -94,10 +95,23 @@ func New(cfg Config) *Buffer {
 	if max <= 0 {
 		max = DefaultMaxDelay
 	}
+	if max < target {
+		max = target
+	}
+
+	// Convert MaxDelay to a slot count, capped at ring buffer size.
+	maxSlots := int(max / (rtp.FrameDurationMs * time.Millisecond))
+	if maxSlots < 1 {
+		maxSlots = 1
+	}
+	if maxSlots > MaxSlotCount {
+		maxSlots = MaxSlotCount
+	}
 
 	b := &Buffer{
 		targetDelay: target,
 		maxDelay:    max,
+		maxSlots:    maxSlots,
 		buffering:   true,
 	}
 	for i := range b.unpackBuf {
@@ -149,7 +163,9 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 			b.stats.LatePackets++
 			return nil
 		}
-		if diff >= MaxSlotCount {
+		// Enforce MaxDelay: reject packets more than maxSlots frames ahead of
+		// playout (they would push effective playout latency past MaxDelay).
+		if int(diff) >= b.maxSlots {
 			b.stats.LatePackets++
 			return nil
 		}
