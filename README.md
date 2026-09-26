@@ -20,7 +20,10 @@ Implementasi **ITU-T G.729** speech codec dalam pure Go — mencakup **G.729 Ann
 - **Packet Loss Concealment (PLC):** Ekstrapolasi pitch, pelemahan gain bertahap, muting setelah 6+ frame beruntun hilang.
 - **Multiple Encoder Profiles:** `ProfileCore`, `ProfileQuality`, `ProfileFast`, `ProfileClipRepair` (soft-knee declipping saturation protection), dan `ProfileDiagnostic` (per-frame DSP telemetry).
 - **Streaming I/O (`io.Writer` & `io.Reader`):** `g729.NewWriter` dan `g729.NewReader` untuk memproses aliran byte audio arbitrer secara kontinu.
-- **RTP packetization** (RFC 3551) dan **SDP annexb negotiation** (RFC 4566) tersedia sebagai package terpisah dengan uji black-box peer interop.
+- **Multi-Frame Batch Processing:** `EncodeBatch()` dan `DecodeBatch()` untuk memproses chunk audio kelipatan 10 ms (20 ms, 40 ms, dll.) secara efisien.
+- **Observabilitas Runtime:** `EncoderStats` dan `DecoderStats` via metode `.Stats()` untuk melacak frame speech, SID, silent frames, audio clipping, dan PLC erasures.
+- **Adaptive Jitter Buffer (`jitter`):** Buffer concurrent-safe berkinerja tinggi (~230 ns, 0 allocs/op) dengan reordering, deduplikasi, dan sinyal otomatis untuk PLC.
+- **RTP & SDP Paket Terpisah:** RTP packetization (RFC 3551 dengan `PackInto` zero-alloc) dan SDP offer/answer negotiation (RFC 4566 / RFC 3551 untuk parameter `annexa` & `annexb`).
 
 > Lihat [`docs/performance.md`](docs/performance.md) untuk angka benchmark lengkap beserta metodologi dan estimasi kapasitas.
 
@@ -34,8 +37,9 @@ go-g729/
 ├── encoder.go          # Pipeline encoder G.729 / G.729A / Annex B
 ├── decoder.go          # Pipeline decoder, PLC, CNG
 ├── stream.go           # Streaming I/O adapters: Writer (io.WriteCloser) & Reader (io.Reader)
-├── rtp/                # Packetization G.729 per RFC 3551 (Pack, Unpack, Peer Interop Tests)
-├── sdp/                # SDP annexb helpers per RFC 4566 (FMTPLine, ParseFMTP, NegotiateAnnexB)
+├── jitter/             # Adaptive jitter buffer, reordering & PLC triggers untuk RTP
+├── rtp/                # Packetization G.729 per RFC 3551 (Pack, PackInto, Unpack, UnpackInto)
+├── sdp/                # SDP helpers per RFC 4566 & RFC 3551 (annexa & annexb negotiation)
 ├── cmd/
 │   ├── g729tool/       # CLI encode/decode file WAV/PCM
 │   └── benchcheck/     # CI gate: fail jika benchmark ns/op melebihi threshold
@@ -190,28 +194,95 @@ reader := g729.NewReader(bitstreamIn)
 _, err = io.Copy(pcmOut, reader)
 ```
 
-### RTP Packetization
+### Batch Transcoding (`EncodeBatch` & `DecodeBatch`)
+
+Untuk throughput pemrosesan audio dalam chunk multi-frame (misalnya 20 ms = 160 sampel, 40 ms = 320 sampel):
+
+```go
+// Encode batch 20 ms (2 frame speech)
+pcm20ms := make([]int16, 160)
+dst20ms := make([]byte, 20)
+n, frameTypes, err := enc.EncodeBatch(dst20ms, pcm20ms)
+
+// Decode batch 20 ms
+pcmOut := make([]int16, 160)
+err = dec.DecodeBatch(pcmOut, dst20ms[:n])
+```
+
+### Observabilitas Runtime (`Stats()`)
+
+Inspeksi telemetri dan metrik kesehatan kompresi tanpa alokasi:
+
+```go
+encStats := enc.Stats()
+fmt.Printf("Speech: %d, SID: %d, Silence: %d, Clipped: %d\n",
+    encStats.SpeechFrames, encStats.SIDFrames, encStats.Untransmitted, encStats.ClippedSamples)
+
+decStats := dec.Stats()
+fmt.Printf("Decoded: %d, PLC Concealed: %d\n",
+    decStats.SpeechFrames, decStats.ConcealedFrames)
+```
+
+### RTP Packetization (RFC 3551)
 
 ```go
 import "github.com/selawe/go-g729/rtp"
 
-// Pack 2 frame menjadi satu RTP payload 20 ms
+// Pack standar (alokasi slice)
 payload, err := rtp.Pack([][]byte{frame1, frame2})
+
+// PackInto: zero-allocation serialization langsung ke buffer paket UDP/RTP
+packetDst := make([]byte, 20)
+n, err := rtp.PackInto(packetDst, [][]byte{frame1, frame2}) // 0 allocs/op!
+
+// Hitung kapasitas frame optimal sesuai MTU jaringan
+maxFrames := rtp.FramesPerPacketForMTU(1500) // 146 frame per MTU 1500
 
 // Unpack standar (alokasi slice)
 frames, info, err := rtp.Unpack(payload)
-// info.Type: FrameSpeech / FrameSID / FrameSuppressed
-// info.NumFrames, info.DurationMs
 
 // UnpackInto: zero-allocation untuk jitter buffer VoIP throughput tinggi
 dst := make([][]byte, 2)
 n, info, err := rtp.UnpackInto(dst, payload) // 0 allocs/op!
 
-// Timestamp RTP
+// Timestamp RTP helper
 ts := rtp.TimestampForFrame(baseTimestamp, frameIndex) // +80 per frame @ 8000 Hz
 ```
 
-### SDP Negotiation (Annex B)
+### Adaptive Jitter Buffer
+
+Package `jitter` menyediakan buffer adaptif concurrent-safe untuk menyerap jitter jaringan, mengurutkan ulang paket (reordering), membuang duplikasi, serta memicu Packet Loss Concealment (PLC) secara mulus:
+
+```go
+import (
+    "time"
+    "github.com/selawe/go-g729/jitter"
+)
+
+jb := jitter.New(jitter.Config{
+    TargetDelay: 40 * time.Millisecond, // Prebuffering target (4 frame = 40 ms)
+})
+
+// Di goroutine receiver RTP (penerima socket UDP):
+err := jb.Push(rtpSeq, rtpTimestamp, rtpPayload)
+
+// Di goroutine playout timer (tick 10 ms):
+var frameBuf [10]byte
+n, isLoss, ok := jb.PopInto(frameBuf[:]) // Zero-alloc playout!
+if !ok {
+    // Sedang prebuffering atau stream kosong
+    return
+}
+if isLoss {
+    // Paket hilang: jalankan Packet Loss Concealment
+    dec.Decode(pcmOut, nil)
+} else {
+    // Frame speech atau SID valid
+    dec.Decode(pcmOut, frameBuf[:n])
+}
+```
+
+### SDP Negotiation (RFC 4566 & RFC 3551)
 
 ```go
 import (
@@ -219,17 +290,22 @@ import (
     "github.com/selawe/go-g729/sdp"
 )
 
-// Build SDP offer
-cfg := g729.DefaultConfig() // EnableVAD: true
-line := sdp.FMTPLine(18, cfg)       // "a=fmtp:18 annexb=yes"
-rmap := sdp.RTPMapLine(18)          // "a=rtpmap:18 G729/8000"
+// Build SDP offer (mendukung VAD/DTX & preferensi varian)
+cfg := g729.DefaultConfig() // G.729A, EnableVAD: true
+line := sdp.FMTPLine(18, cfg) // "a=fmtp:18 annexb=yes"
 
-// Parse SDP answer dari remote peer
-cfg, err := sdp.ConfigFromFMTP("annexb=no")
-enc := g729.NewEncoder(cfg) // CBR 8 kbps sesuai negosiasi
+// Parse parameter fmtp dari remote peer (annexa & annexb)
+params, _ := sdp.ParseFMTPParams("annexb=no; annexa=yes")
 
-// Negotiate offer/answer: "no" wins
-agreed, _ := sdp.NegotiateAnnexB("annexb=yes", "annexb=no") // → false
+// Negosiasi Annex B ("no" wins per RFC 3551)
+agreedAnnexB, _ := sdp.NegotiateAnnexB("annexb=yes", "annexb=no") // → false
+
+// Negosiasi Annex A (kedua pihak harus sepakat "yes")
+agreedAnnexA, _ := sdp.NegotiateAnnexA("annexa=yes", "annexa=no") // → false (Full G.729)
+
+// Konfigurasi encoder otomatis dari hasil negosiasi SDP
+remoteCfg, _ := sdp.ConfigFromFMTP("annexa=no; annexb=no")
+enc := g729.NewEncoder(remoteCfg) // Full G.729 CBR 8 kbps
 ```
 
 ---
@@ -303,6 +379,9 @@ go test -run TestFrameTimeJitter -v .
 # Endurance load-test smoke (50 000 frame / 500 detik simulasi)
 go test -run TestLoadSmoke -v .
 ```
+
+> [!NOTE]
+> Flag `-race` (Go race detector) membutuhkan CGO toolchain (GCC/Clang). Di Windows gunakan MinGW-w64 (`gcc`), di Linux gunakan `build-essential` (`gcc`), dan di macOS gunakan Xcode Command Line Tools. Seluruh package `go-g729` itu sendiri adalah 100% pure Go tanpa dependensi CGO saat kompilasi normal aplikasi Anda.
 
 ---
 

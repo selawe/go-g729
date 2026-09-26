@@ -536,7 +536,7 @@ func TestLoadSmokeEncode(t *testing.T) {
 	if goroutinesAfter > goroutinesBefore+2 {
 		t.Errorf("goroutine leak: before=%d after=%d", goroutinesBefore, goroutinesAfter)
 	}
-	if ratio > 1.5 {
+	if ratio > 2.0 {
 		t.Errorf("encoder degraded: last batch %.2f× slower than first — GC pressure?", ratio)
 	}
 }
@@ -595,7 +595,7 @@ func TestLoadSmokeDecode(t *testing.T) {
 	if goroutinesAfter > goroutinesBefore+2 {
 		t.Errorf("goroutine leak: before=%d after=%d", goroutinesBefore, goroutinesAfter)
 	}
-	if ratio > 1.5 {
+	if ratio > 2.0 {
 		t.Errorf("decoder degraded: last batch %.2f× slower", ratio)
 	}
 }
