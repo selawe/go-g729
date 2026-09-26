@@ -113,8 +113,8 @@ func MediaSection(port, payloadType int, cfg g729.Config) string {
 //	""  → returns DefaultAnnexB (true), nil
 //
 // Unknown additional parameters are silently ignored to allow forward
-// compatibility with future G.729 extensions.
-// For parsing both annexa and annexb parameters, see ParseFMTPParams.
+// compatibility with future G.729 extensions. For parsing both annexa and
+// annexb parameters, see ParseFMTPParams.
 func ParseFMTP(fmtp string) (annexb bool, err error) {
 	_, annexb, err = ParseFMTPParams(fmtp)
 	return annexb, err
