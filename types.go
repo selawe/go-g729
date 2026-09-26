@@ -53,6 +53,9 @@ type Config struct {
 	EnableClipRepair bool
 	// OnDiagnostic is an optional telemetry callback invoked per frame with DSP metrics.
 	OnDiagnostic DiagnosticCallback
+	// DisablePanicRecovery when true disables automatic recover() in Encode(), allowing
+	// internal DSP panics to propagate directly (useful for debugging and unit tests).
+	DisablePanicRecovery bool
 }
 
 // DefaultConfig returns the standard configuration: G.729A with Annex B VAD enabled.
@@ -122,6 +125,9 @@ var (
 
 	// ErrInvalidFrameLen is returned when the decoder receives a frame byte slice of invalid length (valid: 0, 2, or 10 bytes).
 	ErrInvalidFrameLen = errors.New("g729: src length must be 0, 2, or 10 bytes")
+
+	// ErrInternalPanic is returned when an internal DSP panic is trapped by panic recovery.
+	ErrInternalPanic = errors.New("g729: internal DSP panic")
 )
 
 // EncoderStats contains cumulative runtime metrics for an Encoder instance.

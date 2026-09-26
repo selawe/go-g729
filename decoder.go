@@ -3,6 +3,7 @@ package g729
 import (
 	"fmt"
 	"math"
+	"runtime/debug"
 
 	"github.com/selawe/go-g729/internal/bits"
 	"github.com/selawe/go-g729/internal/codebook"
@@ -123,7 +124,7 @@ func (d *decoder) Reset() {
 func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("g729: decode panic: %v", r)
+			err = fmt.Errorf("%w: %v\nstack:\n%s", ErrInternalPanic, r, debug.Stack())
 		}
 	}()
 
@@ -463,8 +464,9 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 
 // Stats returns cumulative operational and PLC telemetry for this decoder.
 func (d *decoder) Stats() DecoderStats {
-	d.stats.LastBFICount = d.badFrames
-	return d.stats
+	s := d.stats
+	s.LastBFICount = d.badFrames
+	return s
 }
 
 // DecodeBatch decompresses multiple G.729 bitstream frames sequentially into dst.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime/debug"
 
 	"github.com/selawe/go-g729/internal/bits"
 	"github.com/selawe/go-g729/internal/codebook"
@@ -147,13 +148,15 @@ func (e *encoder) Reset() {
 // Encode processes 80 samples (10 ms) of 16-bit linear PCM audio in src, and writes the encoded
 // bitstream into dst.
 func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("g729: encode panic: %v", r)
-			n = 0
-			frameType = FrameUntransmitted
-		}
-	}()
+	if !e.cfg.DisablePanicRecovery {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("%w: %v\nstack:\n%s", ErrInternalPanic, r, debug.Stack())
+				n = 0
+				frameType = FrameUntransmitted
+			}
+		}()
+	}
 
 	// 1. Validate buffers
 	if len(src) != params.L_FRAME {
