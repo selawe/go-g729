@@ -24,6 +24,23 @@ const (
 	FrameUntransmitted
 )
 
+// DiagnosticStats captures DSP telemetry metrics for one 10 ms encoded frame.
+type DiagnosticStats struct {
+	FrameIndex   int        // 1-indexed frame sequence number
+	FrameType    FrameType  // FrameSpeech, FrameSID, or FrameUntransmitted
+	EnergyDB     float32    // Full-band normalized energy in dB
+	ZeroCrossing float32    // Normalized zero-crossing rate [0..1]
+	VADMarker    int        // 1: Voice, 0: Noise
+	PitchLag     int        // Open-loop pitch delay [20..143] (0 if uncomputed or SID)
+	GainPitch    [2]float32 // Subframe pitch gains (g_p)
+	GainCode     [2]float32 // Subframe algebraic codebook gains (g_c)
+	ClippedCount int        // Number of input samples that saturated (|x| >= 32760)
+}
+
+// DiagnosticCallback is a telemetry hook invoked after each frame is encoded.
+// It should execute quickly without blocking or allocating on the heap.
+type DiagnosticCallback func(stats DiagnosticStats)
+
 // Config configures the operating parameters of the G.729 encoder.
 type Config struct {
 	// Variant selects between G.729 Annex A (fast) and full G.729.
@@ -31,13 +48,61 @@ type Config struct {
 	// EnableVAD enables Voice Activity Detection (VAD) and Discontinuous Transmission (DTX)
 	// per ITU-T G.729 Annex B. When false, the encoder operates in constant bit-rate (CBR) 8 kbps.
 	EnableVAD bool
+	// EnableClipRepair enables soft-knee input declipping pre-processing to protect
+	// LPC Levinson-Durbin analysis against hard ADC saturation and microphone clipping.
+	EnableClipRepair bool
+	// OnDiagnostic is an optional telemetry callback invoked per frame with DSP metrics.
+	OnDiagnostic DiagnosticCallback
 }
 
 // DefaultConfig returns the standard configuration: G.729A with Annex B VAD enabled.
 func DefaultConfig() Config {
+	return ProfileCore()
+}
+
+// ProfileCore returns the standard G.729A configuration with Annex B VAD/DTX enabled (VoIP default).
+func ProfileCore() Config {
 	return Config{
 		Variant:   VariantG729A,
 		EnableVAD: true,
+	}
+}
+
+// ProfileQuality returns the full-complexity ITU-T G.729 configuration with nested ACELP search
+// and harmonic weighting for maximum audio fidelity and SNR.
+func ProfileQuality() Config {
+	return Config{
+		Variant:   VariantG729,
+		EnableVAD: false,
+	}
+}
+
+// ProfileFast returns the reduced-complexity G.729A configuration with VAD disabled (CBR 8 kbps)
+// for minimal CPU latency and maximum throughput (~250x real-time).
+func ProfileFast() Config {
+	return Config{
+		Variant:   VariantG729A,
+		EnableVAD: false,
+	}
+}
+
+// ProfileClipRepair returns a G.729A configuration with soft-knee saturation repair enabled
+// to mitigate harsh clipping and LPC instability from high-gain microphones or PSTN line overdrive.
+func ProfileClipRepair() Config {
+	return Config{
+		Variant:          VariantG729A,
+		EnableVAD:        true,
+		EnableClipRepair: true,
+	}
+}
+
+// ProfileDiagnostic returns a G.729A configuration with per-frame DSP telemetry reporting
+// via the provided DiagnosticCallback.
+func ProfileDiagnostic(cb DiagnosticCallback) Config {
+	return Config{
+		Variant:      VariantG729A,
+		EnableVAD:    true,
+		OnDiagnostic: cb,
 	}
 }
 

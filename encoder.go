@@ -1,6 +1,8 @@
 package g729
 
 import (
+	"math"
+
 	"github.com/selawe/go-g729/internal/bits"
 	"github.com/selawe/go-g729/internal/codebook"
 	"github.com/selawe/go-g729/internal/dsp"
@@ -149,9 +151,19 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 
 	// 2. High-pass filter new speech samples into speech buffer
 	newSpeech := e.oldSpeech[params.L_TOTAL-params.L_FRAME : params.L_TOTAL]
+	clippedCount := 0
 	for i := 0; i < params.L_FRAME; i++ {
-		newSpeech[i] = float32(src[i])
+		s := src[i]
+		if s == 32767 || s <= -32768 {
+			clippedCount++
+		}
+		newSpeech[i] = float32(s)
 	}
+
+	if e.cfg.EnableClipRepair {
+		dsp.SoftClip(newSpeech, 28000.0, 32760.0)
+	}
+
 	dsp.HighPassFilter(newSpeech, &e.hpfState)
 
 	// Pointers within oldSpeech:
@@ -186,9 +198,14 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 
 	// 6. Annex B VAD / DTX
 	e.frameCount++
+	var energyDB float32
+	var marker int = vad.Voice
+
 	if e.cfg.EnableVAD {
 		lsfNew := lsp.LSP2LSF(lspNew)
-		marker, _ := e.vadState.Process(rc[1], lsfNew[:], r[:params.NP+1], pWindow, e.frameCount, e.pastVad, e.ppastVad)
+		var vadEnergy float32
+		marker, vadEnergy = e.vadState.Process(rc[1], lsfNew[:], r[:params.NP+1], pWindow, e.frameCount, e.pastVad, e.ppastVad)
+		energyDB = vadEnergy
 		e.dtxState.UpdateCNG(rUnwindowed[:params.MP1], marker)
 
 		if marker == vad.Noise {
@@ -211,6 +228,31 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 			copy(e.oldWsp[:params.PIT_MAX], e.oldWsp[params.L_FRAME:params.L_FRAME+params.PIT_MAX])
 			copy(e.oldExc[:params.L_PAST_EXC], e.oldExc[params.L_FRAME:params.L_FRAME+params.L_PAST_EXC])
 
+			if e.cfg.OnDiagnostic != nil {
+				var zc float32
+				dtemp := speech[0]
+				for i := 1; i < params.L_FRAME; i++ {
+					if dtemp*speech[i] < 0.0 {
+						zc += 1.0
+					}
+					dtemp = speech[i]
+				}
+				zc /= 80.0
+
+				ft := FrameUntransmitted
+				if sid.Transmitted {
+					ft = FrameSID
+				}
+				e.cfg.OnDiagnostic(DiagnosticStats{
+					FrameIndex:   e.frameCount,
+					FrameType:    ft,
+					EnergyDB:     energyDB,
+					ZeroCrossing: zc,
+					VADMarker:    vad.Noise,
+					ClippedCount: clippedCount,
+				})
+			}
+
 			if sid.Transmitted {
 				copy(dst[:params.BYTES_PER_SID], sid.Packed[:])
 				return params.BYTES_PER_SID, FrameSID, nil
@@ -220,6 +262,8 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 
 		e.ppastVad = e.pastVad
 		e.pastVad = 1
+	} else if e.cfg.OnDiagnostic != nil {
+		energyDB = float32(10.0 * math.Log10(float64(r[0]/240.0 + 1e-38)))
 	}
 
 	// 7. Active Speech Frame: Quantize LSP
@@ -359,6 +403,8 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	var xn2 [params.L_SUBFR]float32
 	var y1 [params.L_SUBFR]float32
 	var errorBuf [params.L_SUBFR]float32
+	var subfrGainPit [2]float32
+	var subfrGainCode [2]float32
 
 	// 10. Subframe processing loop
 	for iSubfr := 0; iSubfr < params.L_FRAME; iSubfr += params.L_SUBFR {
@@ -462,6 +508,8 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 		// 10h. Gain quantization
 		codebook.CorrXY2(xn[:], y1[:], y2[:], &gCoeff)
 		ga, gb, qGainPit, qGainCode := codebook.QuantizeGain(codeVec[:], &gCoeff, &e.gainPred, taming)
+		subfrGainPit[subfrIdx] = qGainPit
+		subfrGainCode[subfrIdx] = qGainCode
 
 		if subfrIdx == 0 {
 			e.paramSet.GA1 = uint8(ga)
@@ -510,5 +558,30 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 
 	// 12. Serialize 80 bits into dst
 	bits.Pack(dst[:params.BYTES_PER_FRAME], &e.paramSet)
+
+	if e.cfg.OnDiagnostic != nil {
+		var zc float32
+		dtemp := speech[0]
+		for i := 1; i < params.L_FRAME; i++ {
+			if dtemp*speech[i] < 0.0 {
+				zc += 1.0
+			}
+			dtemp = speech[i]
+		}
+		zc /= 80.0
+
+		e.cfg.OnDiagnostic(DiagnosticStats{
+			FrameIndex:   e.frameCount,
+			FrameType:    FrameSpeech,
+			EnergyDB:     energyDB,
+			ZeroCrossing: zc,
+			VADMarker:    marker,
+			PitchLag:     tOp,
+			GainPitch:    subfrGainPit,
+			GainCode:     subfrGainCode,
+			ClippedCount: clippedCount,
+		})
+	}
+
 	return params.BYTES_PER_FRAME, FrameSpeech, nil
 }
