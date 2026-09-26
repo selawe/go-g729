@@ -76,14 +76,15 @@ func SynthesisFilter(out, x, a, mem []float32, update bool) {
 		panic("dsp: out slice length is less than input x length")
 	}
 
-	var aCoeffs [params.M]float32
+	var aCoeffs []float32
 	if len(a) >= params.M+1 {
-		copy(aCoeffs[:], a[1:params.M+1])
+		aCoeffs = a[1 : params.M+1]
 	} else if len(a) >= params.M {
-		copy(aCoeffs[:], a[:params.M])
+		aCoeffs = a[:params.M]
 	} else {
 		panic("dsp: a slice length must be at least M (10)")
 	}
+	_ = aCoeffs[params.M-1]
 
 	var buf [params.L_FRAME + params.M]float32
 	var yy []float32
@@ -129,14 +130,15 @@ func Residue(out, x, a, mem []float32, update bool) {
 		panic("dsp: out slice length is less than input x length")
 	}
 
-	var aCoeffs [params.M]float32
+	var aCoeffs []float32
 	if len(a) >= params.M+1 {
-		copy(aCoeffs[:], a[1:params.M+1])
+		aCoeffs = a[1 : params.M+1]
 	} else if len(a) >= params.M {
-		copy(aCoeffs[:], a[:params.M])
+		aCoeffs = a[:params.M]
 	} else {
 		panic("dsp: a slice length must be at least M (10)")
 	}
+	_ = aCoeffs[params.M-1]
 
 	var buf [params.L_FRAME + params.M]float32
 	var xx []float32

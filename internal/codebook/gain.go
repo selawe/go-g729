@@ -271,7 +271,9 @@ func DequantizeGain(
 			*prevGainCode *= 0.98
 			gainCode = *prevGainCode
 		}
-		GainUpdateErasure(pastQuaEn)
+		if pastQuaEn != nil {
+			GainUpdateErasure(pastQuaEn)
+		}
 		return gainPit, gainCode
 	}
 
