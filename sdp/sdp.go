@@ -114,9 +114,6 @@ func MediaSection(port, payloadType int, cfg g729.Config) string {
 //
 // Unknown additional parameters are silently ignored to allow forward
 // compatibility with future G.729 extensions.
-// ParseFMTP parses a G.729 fmtp attribute value string (the part after
-// "a=fmtp:<pt> ") and returns the annexb flag.
-//
 // For parsing both annexa and annexb parameters, see ParseFMTPParams.
 func ParseFMTP(fmtp string) (annexb bool, err error) {
 	_, annexb, err = ParseFMTPParams(fmtp)
@@ -237,11 +234,11 @@ func ConfigFromFMTP(fmtp string) (g729.Config, error) {
 func NegotiateAnnexA(offerFMTP, answerFMTP string) (bool, error) {
 	offerA, _, err := ParseFMTPParams(offerFMTP)
 	if err != nil {
-		return true, fmt.Errorf("offer: %w", err)
+		return false, fmt.Errorf("offer: %w", err)
 	}
 	answerA, _, err := ParseFMTPParams(answerFMTP)
 	if err != nil {
-		return true, fmt.Errorf("answer: %w", err)
+		return false, fmt.Errorf("answer: %w", err)
 	}
 	return offerA && answerA, nil
 }

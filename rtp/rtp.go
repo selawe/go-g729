@@ -94,14 +94,6 @@ type PayloadInfo struct {
 	DurationMs int
 }
 
-// Pack bundles one or more G.729 encoded frames into a single RTP payload.
-//
-// Rules:
-//   - Speech frames: all must be exactly 10 bytes. Multiple frames are
-//     concatenated; the payload length will be n×10.
-//   - SID frame: exactly one 2-byte frame; must not be mixed with speech frames.
-//   - Suppressed frames: caller must not call Pack for suppressed frames —
-//     simply skip sending an RTP packet.
 // HeaderOverheadIPv4RTP is the typical size in bytes of IPv4 (20B) + UDP (8B) + RTP (12B) headers.
 const HeaderOverheadIPv4RTP = 40
 

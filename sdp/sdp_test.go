@@ -187,6 +187,14 @@ func TestNegotiateAnnexA(t *testing.T) {
 			t.Errorf("NegotiateAnnexA(%q, %q) = %v, want %v", c.offer, c.answer, got, c.want)
 		}
 	}
+
+	// Verify error cases return false
+	if got, err := sdp.NegotiateAnnexA("annexa=invalid", "annexa=yes"); err == nil || got != false {
+		t.Errorf("expected error and false for invalid offer, got %v, err=%v", got, err)
+	}
+	if got, err := sdp.NegotiateAnnexA("annexa=yes", "annexa=invalid"); err == nil || got != false {
+		t.Errorf("expected error and false for invalid answer, got %v, err=%v", got, err)
+	}
 }
 
 func TestNegotiateAnnexB(t *testing.T) {
