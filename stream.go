@@ -181,6 +181,10 @@ type Reader struct {
 	bufHead int
 	bufTail int
 	pcm     [80]int16
+	// pendingErr holds an error captured after some PCM bytes have already been
+	// returned to the caller. It is surfaced on the subsequent Read call so a
+	// mid-stream decoder failure is never silently swallowed.
+	pendingErr error
 }
 
 // NewReader creates a new streaming G.729 decoder reading from r.
@@ -195,9 +199,21 @@ func NewReader(r io.Reader) *Reader {
 
 // Read decompresses G.729 bitstream frames from the underlying reader and copies
 // 16-bit linear PCM bytes into p.
+//
+// If a decode or read error occurs mid-stream after some PCM bytes have already
+// been delivered, Read returns (n, nil) for that call and surfaces the error on
+// the next call once the buffered PCM has been drained. This preserves io.Reader
+// semantics while ensuring no error is silently discarded.
 func (r *Reader) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
+	}
+
+	// Surface any error captured on the previous call once buffered PCM drained.
+	if r.pendingErr != nil && r.bufHead >= r.bufTail {
+		e := r.pendingErr
+		r.pendingErr = nil
+		return 0, e
 	}
 
 	totalRead := 0
@@ -216,12 +232,19 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 			continue
 		}
 
+		// If an error was captured earlier in this same call (after we already
+		// filled some PCM), stash it and return the bytes accumulated so far.
+		if r.pendingErr != nil {
+			return totalRead, nil
+		}
+
 		// Read next frame from underlying bitstream
 		// Standard speech frames are 10 bytes
 		var frame [10]byte
 		nRead, readErr := io.ReadFull(r.r, frame[:])
 		if nRead == 0 {
 			if totalRead > 0 {
+				r.pendingErr = readErr
 				return totalRead, nil
 			}
 			return 0, readErr
@@ -232,7 +255,8 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 				errToReturn = io.ErrUnexpectedEOF
 			}
 			if totalRead > 0 {
-				return totalRead, errToReturn
+				r.pendingErr = errToReturn
+				return totalRead, nil
 			}
 			return 0, errToReturn
 		}
@@ -240,6 +264,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		// Decompress frame into 80 int16 samples (strictly 10-byte CBR frames)
 		if err := r.dec.Decode(r.pcm[:], frame[:]); err != nil {
 			if totalRead > 0 {
+				r.pendingErr = err
 				return totalRead, nil
 			}
 			return 0, err

@@ -189,3 +189,65 @@ func TestStreamReaderRejectsNon10ByteFrames(t *testing.T) {
 		t.Errorf("expected ErrUnexpectedEOF for 2-byte SID stream, got: %v", err)
 	}
 }
+
+// TestStreamReaderErrorSurfacedAfterPCMDrain verifies that a mid-stream read
+// error is preserved and surfaced on the following Read call after buffered
+// PCM has been drained — the io.Reader contract must not silently swallow it.
+func TestStreamReaderErrorSurfacedAfterPCMDrain(t *testing.T) {
+	// Build a bitstream of two valid speech frames, then append a truncated
+	// (5-byte) tail so io.ReadFull returns io.ErrUnexpectedEOF mid-stream.
+	var stream bytes.Buffer
+	enc := g729.NewEncoder(g729.Config{Variant: g729.VariantG729A, EnableVAD: false})
+	src := make([]int16, 80)
+	for i := range src {
+		// Simple ramp – any deterministic non-zero signal works.
+		src[i] = int16((i * 200) - 8000)
+	}
+	var frame [10]byte
+	for i := 0; i < 2; i++ {
+		n, _, err := enc.Encode(frame[:], src)
+		if err != nil || n != 10 {
+			t.Fatalf("encoder setup: n=%d err=%v", n, err)
+		}
+		stream.Write(frame[:n])
+	}
+	// Truncated third frame — triggers io.ErrUnexpectedEOF after 2 good frames.
+	stream.Write([]byte{0xDE, 0xAD, 0xBE, 0xEF, 0x00})
+
+	reader := g729.NewReader(bytes.NewReader(stream.Bytes()))
+
+	// First Read: request only 200 bytes so we don't exhaust the whole PCM.
+	// This ensures the trailing bytes arrive later, hitting the pending path.
+	buf := make([]byte, 200)
+	n1, err := reader.Read(buf)
+	if err != nil {
+		t.Fatalf("first Read returned err=%v (want nil), n=%d", err, n1)
+	}
+	if n1 == 0 {
+		t.Fatalf("first Read returned 0 bytes")
+	}
+
+	// Drain remaining buffered PCM (2 frames = 320 bytes total) until the
+	// underlying error surfaces. The truncated tail must cause a non-nil err.
+	drain := make([]byte, 320)
+	var sawErr error
+	for attempts := 0; attempts < 10; attempts++ {
+		n, err := reader.Read(drain)
+		if err != nil {
+			sawErr = err
+			break
+		}
+		if n == 0 {
+			break
+		}
+	}
+	if sawErr != io.ErrUnexpectedEOF {
+		t.Fatalf("expected ErrUnexpectedEOF surfaced after PCM drain, got %v", sawErr)
+	}
+
+	// Follow-up Read after the error must not resurrect it (state cleared).
+	_, err = reader.Read(drain)
+	if err == io.ErrUnexpectedEOF {
+		t.Errorf("pendingErr should be cleared after first surfacing, got repeat: %v", err)
+	}
+}
