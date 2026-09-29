@@ -53,6 +53,13 @@ const (
 
 	// DefaultAnnexB is the default annexb value per RFC 3551 (true = enabled).
 	DefaultAnnexB = true
+
+	// MaxFMTPLength caps the accepted length of an SDP fmtp attribute value.
+	// Real G.729 fmtp payloads carry at most a handful of "key=value" pairs,
+	// well under 200 bytes. The 1 KiB limit provides ample headroom for
+	// unknown forward-compatible extensions while blocking DoS via oversized
+	// fmtp input (attacker-supplied SDP driving unbounded string split).
+	MaxFMTPLength = 1024
 )
 
 // Sentinel errors.
@@ -131,6 +138,11 @@ func ParseFMTP(fmtp string) (annexb bool, err error) {
 func ParseFMTPParams(fmtp string) (annexa bool, annexb bool, err error) {
 	annexa = DefaultAnnexA
 	annexb = DefaultAnnexB
+	if len(fmtp) > MaxFMTPLength {
+		return DefaultAnnexA, DefaultAnnexB, fmt.Errorf(
+			"%w: fmtp length %d exceeds MaxFMTPLength (%d)",
+			ErrInvalidValue, len(fmtp), MaxFMTPLength)
+	}
 	fmtp = strings.TrimSpace(fmtp)
 	if fmtp == "" {
 		return annexa, annexb, nil

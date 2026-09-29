@@ -297,3 +297,43 @@ func TestSDPEncoderIntegration(t *testing.T) {
 		}
 	}
 }
+
+// TestParseFMTPParamsRejectsOversizedInput ensures oversized fmtp values are
+// rejected before entering strings.Split, blocking a DoS vector where
+// attacker-supplied SDP causes unbounded allocation.
+func TestParseFMTPParamsRejectsOversizedInput(t *testing.T) {
+	// Build a fmtp value of MaxFMTPLength+1 bytes.
+	big := strings.Repeat("a=b;", sdp.MaxFMTPLength) // ~4 KiB
+	if len(big) <= sdp.MaxFMTPLength {
+		t.Fatalf("test setup: repeat produced %d bytes, expected > %d", len(big), sdp.MaxFMTPLength)
+	}
+
+	_, _, err := sdp.ParseFMTPParams(big)
+	if err == nil {
+		t.Fatal("expected error for oversized fmtp input, got nil")
+	}
+	// The wrapped sentinel should be ErrInvalidValue.
+	if !strings.Contains(err.Error(), "MaxFMTPLength") {
+		t.Errorf("expected error mentioning MaxFMTPLength, got: %v", err)
+	}
+}
+
+// TestParseFMTPParamsAcceptsAtBoundary verifies the length check is inclusive:
+// exactly MaxFMTPLength bytes must still parse successfully.
+func TestParseFMTPParamsAcceptsAtBoundary(t *testing.T) {
+	// annexb=yes is 11 bytes; pad with harmless ignored keys up to exactly the limit.
+	prefix := "annexb=yes"
+	pad := strings.Repeat(";x=y", (sdp.MaxFMTPLength-len(prefix))/4)
+	input := prefix + pad
+	if len(input) > sdp.MaxFMTPLength {
+		input = input[:sdp.MaxFMTPLength]
+	}
+
+	_, annexb, err := sdp.ParseFMTPParams(input)
+	if err != nil {
+		t.Fatalf("input of %d bytes should parse, got err: %v", len(input), err)
+	}
+	if !annexb {
+		t.Errorf("annexb=yes at boundary length should parse true, got false")
+	}
+}
