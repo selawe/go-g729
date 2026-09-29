@@ -1,7 +1,6 @@
 package g729
 
 import (
-	"fmt"
 	"math"
 	"runtime/debug"
 
@@ -18,6 +17,8 @@ import (
 
 // decoder implements the Decoder interface for ITU-T G.729 / G.729A speech synthesis.
 type decoder struct {
+	cfg DecoderConfig
+
 	// Excitation history buffer (154 past samples + 80 current frame samples = 234 floats).
 	oldExc [params.EXC_BUF_LEN]float32
 
@@ -72,9 +73,16 @@ type decoder struct {
 	stats DecoderStats
 }
 
-// NewDecoder creates and initializes a new G.729 / G.729A speech decoder.
+// NewDecoder creates and initializes a new G.729 / G.729A speech decoder with
+// default configuration (panic recovery enabled, no stack trace in errors).
 func NewDecoder() Decoder {
-	d := &decoder{}
+	return NewDecoderWithConfig(DecoderConfig{})
+}
+
+// NewDecoderWithConfig creates and initializes a new G.729 / G.729A speech
+// decoder with the given DecoderConfig.
+func NewDecoderWithConfig(cfg DecoderConfig) Decoder {
+	d := &decoder{cfg: cfg}
 	d.Reset()
 	return d
 }
@@ -122,11 +130,13 @@ func (d *decoder) Reset() {
 //   - 2 bytes:  Annex B SID frame (16 bits)
 //   - 0 bytes (or nil): Frame erasure / packet loss concealment (or untransmitted frame if in DTX)
 func (d *decoder) Decode(dst []int16, src []byte) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("%w: %v\nstack:\n%s", ErrInternalPanic, r, debug.Stack())
-		}
-	}()
+	if !d.cfg.DisablePanicRecovery {
+		defer func() {
+			if r := recover(); r != nil {
+				err = buildPanicError(r, debug.Stack(), d.cfg.IncludePanicStack)
+			}
+		}()
+	}
 
 	if len(dst) < params.L_FRAME {
 		return ErrInvalidOutputLen

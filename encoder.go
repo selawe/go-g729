@@ -2,7 +2,6 @@ package g729
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"runtime/debug"
 
@@ -151,7 +150,7 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	if !e.cfg.DisablePanicRecovery {
 		defer func() {
 			if r := recover(); r != nil {
-				err = fmt.Errorf("%w: %v\nstack:\n%s", ErrInternalPanic, r, debug.Stack())
+				err = buildPanicError(r, debug.Stack(), e.cfg.IncludePanicStack)
 				n = 0
 				frameType = FrameUntransmitted
 			}

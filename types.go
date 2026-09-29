@@ -1,6 +1,9 @@
 package g729
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Variant specifies the ITU-T G.729 encoder/decoder algorithm variant.
 type Variant int
@@ -56,6 +59,21 @@ type Config struct {
 	// DisablePanicRecovery when true disables automatic recover() in Encode(), allowing
 	// internal DSP panics to propagate directly (useful for debugging and unit tests).
 	DisablePanicRecovery bool
+	// IncludePanicStack when true causes ErrInternalPanic errors to include a full
+	// runtime stack trace (debug.Stack). Default false to avoid leaking internal build
+	// paths through error strings propagated to remote clients or user-facing logs.
+	IncludePanicStack bool
+}
+
+// DecoderConfig configures the operating parameters of the G.729 decoder.
+type DecoderConfig struct {
+	// DisablePanicRecovery when true disables automatic recover() in Decode(),
+	// allowing internal DSP panics to propagate directly (useful for debugging).
+	DisablePanicRecovery bool
+	// IncludePanicStack when true causes ErrInternalPanic errors to include a full
+	// runtime stack trace (debug.Stack). Default false to avoid leaking internal build
+	// paths through error strings propagated to remote clients or user-facing logs.
+	IncludePanicStack bool
 }
 
 // DefaultConfig returns the standard configuration: G.729A with Annex B VAD enabled.
@@ -129,6 +147,17 @@ var (
 	// ErrInternalPanic is returned when an internal DSP panic is trapped by panic recovery.
 	ErrInternalPanic = errors.New("g729: internal DSP panic")
 )
+
+// buildPanicError formats a recovered panic value as an error wrapping
+// ErrInternalPanic. When includeStack is true a runtime stack trace is
+// appended; otherwise the returned error contains only the panic value,
+// avoiding disclosure of internal build paths in propagated errors.
+func buildPanicError(recovered any, stack []byte, includeStack bool) error {
+	if includeStack {
+		return fmt.Errorf("%w: %v\nstack:\n%s", ErrInternalPanic, recovered, stack)
+	}
+	return fmt.Errorf("%w: %v", ErrInternalPanic, recovered)
+}
 
 // EncoderStats contains cumulative runtime metrics for an Encoder instance.
 type EncoderStats struct {
