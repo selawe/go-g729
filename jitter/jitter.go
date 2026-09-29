@@ -83,11 +83,28 @@ type Buffer struct {
 	slots [MaxSlotCount]frameSlot
 	stats Stats
 
+	// bufferedCount tracks the number of valid slots whose sequence numbers
+	// lie in the current playout window [playoutSeq, playoutSeq+MaxSlotCount).
+	// Maintained incrementally in Push/Pop to avoid the O(MaxSlotCount) scan
+	// that the earlier implementation performed on every Pop.
+	bufferedCount int
+
 	// unpackBuf sized for the largest realistic RTP payload: 8 frames = 80 ms.
 	// Common packetization intervals are 10, 20, 30, 40 ms (1-4 frames), but
 	// some legacy PBX gateways bundle up to 80 ms.
 	unpackBuf [8][10]byte
 	dstSlices [8][]byte
+}
+
+// slotIsCurrent reports whether a slot's stored sequence number lies within
+// the current playout window [playoutSeq, playoutSeq+MaxSlotCount). Uses
+// signed 16-bit subtraction so it handles seq-number wraparound correctly.
+func (b *Buffer) slotIsCurrent(slot *frameSlot) bool {
+	if !slot.valid {
+		return false
+	}
+	diff := int16(slot.seq - b.playoutSeq)
+	return diff >= 0 && int(diff) < MaxSlotCount
 }
 
 // New creates a new jitter buffer with the given configuration.
@@ -134,6 +151,7 @@ func (b *Buffer) Reset() {
 	b.buffering = true
 	b.playoutSeq = 0
 	b.stats = Stats{}
+	b.bufferedCount = 0
 	for i := range b.slots {
 		b.slots[i].valid = false
 	}
@@ -187,6 +205,11 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 				b.stats.DupPackets++
 				continue
 			}
+			// Overwriting a different-seq entry: adjust bufferedCount by
+			// dropping the old contribution before adding the new one below.
+			if b.slotIsCurrent(slot) {
+				b.bufferedCount--
+			}
 			b.stats.DroppedByWrap++
 		}
 
@@ -199,6 +222,7 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 		} else {
 			slot.dataLen = 0
 		}
+		b.bufferedCount++
 	}
 
 	return nil
@@ -225,14 +249,7 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 		return 0, false, false
 	}
 
-	bufferedCount := 0
-	for i := 0; i < MaxSlotCount; i++ {
-		slotIdx := int((b.playoutSeq + uint16(i)) & slotMask)
-		if b.slots[slotIdx].valid && b.slots[slotIdx].seq == b.playoutSeq+uint16(i) {
-			bufferedCount++
-		}
-	}
-	b.stats.CurrentBuffered = bufferedCount
+	b.stats.CurrentBuffered = b.bufferedCount
 
 	targetFrames := int(b.targetDelay / (rtp.FrameDurationMs * time.Millisecond))
 	if targetFrames < 1 {
@@ -240,14 +257,14 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 	}
 
 	if b.buffering {
-		if bufferedCount >= targetFrames {
+		if b.bufferedCount >= targetFrames {
 			b.buffering = false
 		} else {
 			return 0, false, false
 		}
 	}
 
-	if bufferedCount == 0 {
+	if b.bufferedCount == 0 {
 		b.buffering = true
 		b.stats.Underflows++
 		return 0, false, false
@@ -258,8 +275,10 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 
 	if slot.valid && slot.seq == b.playoutSeq {
 		slot.valid = false
+		b.bufferedCount--
 		b.playoutSeq++
 		b.stats.PoppedFrames++
+		b.stats.CurrentBuffered = b.bufferedCount
 		if slot.dataLen > 0 {
 			n = copy(dst, slot.data[:slot.dataLen])
 			return n, false, true
@@ -268,9 +287,19 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 		return 0, false, true
 	}
 
-	// Gap detected: packet loss! Advance playoutSeq and signal PLC.
+	// Gap detected: packet loss! Advance playoutSeq and signal PLC. If the
+	// slot at the new playoutSeq+MaxSlotCount-1 boundary held a stale entry
+	// (valid from a previous cycle that never got popped), it may still be
+	// counted; drop it now to keep bufferedCount honest under long gap runs.
 	b.playoutSeq++
+	agedIdx := int((b.playoutSeq + uint16(MaxSlotCount-1)) & slotMask)
+	agedSlot := &b.slots[agedIdx]
+	if agedSlot.valid && !b.slotIsCurrent(agedSlot) {
+		agedSlot.valid = false
+		b.bufferedCount--
+	}
 	b.stats.EmittedPLC++
+	b.stats.CurrentBuffered = b.bufferedCount
 	return 0, true, true
 }
 
@@ -306,5 +335,6 @@ func (b *Buffer) Flush() {
 func (b *Buffer) Stats() Stats {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.stats.CurrentBuffered = b.bufferedCount
 	return b.stats
 }

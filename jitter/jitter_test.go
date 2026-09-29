@@ -348,3 +348,65 @@ func BenchmarkJitterBufferPushPopInto(b *testing.B) {
 	}
 }
 
+// TestCurrentBufferedIncremental verifies that Stats().CurrentBuffered tracks
+// the push/pop cycle correctly without requiring an O(N) slot scan. This test
+// would expose drift if the incremental counter were mis-maintained.
+func TestCurrentBufferedIncremental(t *testing.T) {
+	jb := jitter.New(jitter.Config{
+		TargetDelay: 20 * time.Millisecond, // 2 frames prebuffering
+		MaxDelay:    200 * time.Millisecond,
+	})
+
+	makePayload := func(seq uint16) []byte {
+		p := make([]byte, 10)
+		p[0] = byte(seq)
+		return p
+	}
+	out := make([]byte, 10)
+
+	// Push 4 frames — buffer should be 4.
+	for i := uint16(0); i < 4; i++ {
+		if err := jb.Push(i, uint32(i)*80, makePayload(i)); err != nil {
+			t.Fatalf("Push %d: %v", i, err)
+		}
+	}
+	if got := jb.Stats().CurrentBuffered; got != 4 {
+		t.Errorf("after 4 pushes: CurrentBuffered=%d, want 4", got)
+	}
+
+	// Pop 2 frames (prebuffer met at 2 frames, playout starts).
+	popped := 0
+	for popped < 2 {
+		_, _, ok := jb.PopInto(out)
+		if ok {
+			popped++
+		} else {
+			break
+		}
+	}
+	if got := jb.Stats().CurrentBuffered; got != 2 {
+		t.Errorf("after 2 pops: CurrentBuffered=%d, want 2", got)
+	}
+
+	// Push a duplicate of seq 2 — should not change count.
+	_ = jb.Push(2, 160, makePayload(2))
+	if got := jb.Stats().CurrentBuffered; got != 2 {
+		t.Errorf("after dup push: CurrentBuffered=%d, want 2 (dup must not increment)", got)
+	}
+
+	// Pop remaining 2 frames.
+	for range 2 {
+		jb.PopInto(out)
+	}
+	if got := jb.Stats().CurrentBuffered; got != 0 {
+		t.Errorf("after draining: CurrentBuffered=%d, want 0", got)
+	}
+
+	// Reset must also zero the counter.
+	_ = jb.Push(100, 8000, makePayload(100))
+	jb.Reset()
+	if got := jb.Stats().CurrentBuffered; got != 0 {
+		t.Errorf("after Reset: CurrentBuffered=%d, want 0", got)
+	}
+}
+
