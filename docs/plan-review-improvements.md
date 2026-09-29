@@ -29,7 +29,7 @@ package path. Jika error di-propagate ke response HTTP/API, informasi build path
   Default: recovery aktif, `IncludePanicStack=false`.
 - Test: verifikasi pesan error tidak berisi "stack:" saat opt-out; tetap berisi saat opt-in.
 
-**Status:** ✅ Selesai (commit `9c2a3a1`)
+**Status:** ✅ Selesai (commit `3b56537`)
 
 ---
 
@@ -45,7 +45,7 @@ error dibuang (`return totalRead, nil`) dan caller tidak pernah tahu.
 - Pada call `Read` berikutnya, jika `pendingErr != nil` dan `bufHead >= bufTail`: return `(0, pendingErr)` dan clear.
 - Test: encode 3 frames, corrupt frame ke-2, verify Read pertama return N>0 nil, Read kedua return decode error.
 
-**Status:** ✅ Selesai (commit `d8e6f4b`)
+**Status:** ✅ Selesai (commit `aa71940`)
 
 ---
 
@@ -60,7 +60,7 @@ slice besar sebelum validasi.
 - Return `ErrInvalidValue` (dengan pesan "input too long") jika `len(fmtp) > MaxFMTPLength`.
 - Test: input 2 KB harus ditolak.
 
-**Status:** ✅ Selesai (commit `6c5eff4`)
+**Status:** ✅ Selesai (commit `37e968a`)
 
 ---
 
@@ -75,7 +75,7 @@ ke telemetry. Berguna untuk deteksi bit-error rate di jaringan.
 - Increment di jalur `parityErr != 0`.
 - Test: buat frame dengan parity dirusak (flip bit P0), decode, verify counter naik.
 
-**Status:** ✅ Selesai (commit `01ac2cc`)
+**Status:** ✅ Selesai (commit `40bd585`)
 
 ---
 
@@ -92,7 +92,7 @@ ke telemetry. Berguna untuk deteksi bit-error rate di jaringan.
 - Handle wrap: saat `DroppedByWrap` (overwrite slot valid dengan seq baru), count tetap.
 - Test: verifikasi `Stats().CurrentBuffered` sama antara before dan after refactor.
 
-**Status:** ✅ Selesai (commit `1a2ecb1`)
+**Status:** ✅ Selesai (commit `9dc37c9`)
 
 ---
 
