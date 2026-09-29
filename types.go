@@ -177,6 +177,11 @@ type DecoderStats struct {
 	ConcealedFrames int // Lost speech frames concealed via PLC
 	Untransmitted   int // Untransmitted DTX silence frames
 	LastBFICount    int // Consecutive bad frame (BFI) count currently active
+	// ParityErrors is the cumulative number of speech frames whose P1 pitch-delay
+	// parity bit mismatched P0, indicating bit-error corruption in transit. When
+	// this counter grows, it signals a lossy or noisy transport (radio, unreliable
+	// UDP path) and useful for driving RTCP receiver-report style feedback.
+	ParityErrors int
 }
 
 // Encoder defines the interface for compressing 8 kHz 16-bit linear PCM audio into G.729 bitstream frames.

@@ -162,6 +162,7 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 		parityErr := 0
 		if pitch.ParityBit(paramSet.P1) != paramSet.P0 {
 			parityErr = 1
+			d.stats.ParityErrors++
 		}
 
 		// Decode LSPs

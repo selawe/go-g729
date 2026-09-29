@@ -332,6 +332,49 @@ func TestDecoderStats(t *testing.T) {
 	}
 }
 
+// TestDecoderStatsParityErrors verifies that intentionally corrupted parity
+// bits are counted in DecoderStats.ParityErrors — useful for detecting bit-error
+// rates on lossy transports.
+func TestDecoderStatsParityErrors(t *testing.T) {
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	dec := NewDecoder()
+
+	frame := generateSine(440.0, 80, 8000.0)
+	var bs [10]byte
+	if n, _, err := enc.Encode(bs[:], frame); err != nil || n != 10 {
+		t.Fatalf("encode failed: n=%d err=%v", n, err)
+	}
+
+	var dst [80]int16
+	// Baseline: correct parity, no counter increment.
+	if err := dec.Decode(dst[:], bs[:]); err != nil {
+		t.Fatalf("baseline decode failed: %v", err)
+	}
+	if got := dec.Stats().ParityErrors; got != 0 {
+		t.Errorf("baseline ParityErrors = %d, want 0", got)
+	}
+
+	// Corrupt the parity bit: P0 lives in bit 5 of byte 3 (see bits.Pack layout).
+	// Flip it to force a parity mismatch.
+	corrupt := bs
+	corrupt[3] ^= 1 << 5
+
+	before := dec.Stats().ParityErrors
+	if err := dec.Decode(dst[:], corrupt[:]); err != nil {
+		t.Fatalf("corrupt decode failed: %v", err)
+	}
+	after := dec.Stats().ParityErrors
+	if after != before+1 {
+		t.Errorf("ParityErrors = %d after corrupt frame, want %d", after, before+1)
+	}
+
+	// Reset must clear the counter.
+	dec.Reset()
+	if got := dec.Stats().ParityErrors; got != 0 {
+		t.Errorf("ParityErrors after Reset = %d, want 0", got)
+	}
+}
+
 func TestDecodeBatch(t *testing.T) {
 	dec := NewDecoder()
 	f1 := make([]byte, 10)
