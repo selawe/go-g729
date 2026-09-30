@@ -10,9 +10,13 @@ import (
 	"github.com/selawe/go-g729/internal/tables"
 )
 
-// RandomG729C implements the standard ITU-T linear congruential pseudo-random generator:
+// RandomG729C implements the ITU-T G.729 Annex B linear congruential PRNG:
 //
 //	seed = seed * 31821 + 13849 (mod 65536)
+//
+// The int16 cast provides the implicit mod 65536 required by the spec.
+// This generator is NOT cryptographically secure; it is intended solely
+// for comfort-noise and CNG excitation generation within the codec.
 func RandomG729C(seed *int16) int16 {
 	*seed = int16(int32(*seed)*31821 + 13849)
 	return *seed
