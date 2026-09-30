@@ -2,6 +2,7 @@ package g729_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"math"
@@ -187,6 +188,117 @@ func TestStreamReaderRejectsNon10ByteFrames(t *testing.T) {
 	_, err = reader2.Read(out)
 	if err != io.ErrUnexpectedEOF {
 		t.Errorf("expected ErrUnexpectedEOF for 2-byte SID stream, got: %v", err)
+	}
+}
+
+// TestWriterContextCancellation verifies that Write stops at a frame boundary
+// when the attached context is cancelled.
+func TestWriterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so the very first frame check fires
+
+	var sink bytes.Buffer
+	w, err := g729.NewWriter(&sink, g729.ProfileFast())
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.SetContext(ctx)
+
+	// 160 bytes = exactly one full frame; Write must return the context error.
+	pcm := make([]byte, 160)
+	_, err = w.Write(pcm)
+	if err == nil {
+		t.Fatal("expected context error, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+	// Nothing should have been written.
+	if sink.Len() != 0 {
+		t.Errorf("expected 0 bytes written after cancel, got %d", sink.Len())
+	}
+}
+
+// TestWriterContextNotCancelledAllowsWrite verifies that Write proceeds normally
+// when the attached context is not yet cancelled.
+func TestWriterContextNotCancelledAllowsWrite(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var sink bytes.Buffer
+	w, err := g729.NewWriter(&sink, g729.ProfileFast())
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.SetContext(ctx)
+
+	pcm := make([]byte, 160)
+	if _, err := w.Write(pcm); err != nil {
+		t.Fatalf("Write with live context: %v", err)
+	}
+	if sink.Len() != 10 {
+		t.Errorf("expected 10 bytes, got %d", sink.Len())
+	}
+}
+
+// TestReaderContextCancellation verifies that Read stops at a frame boundary
+// when the attached context is cancelled.
+func TestReaderContextCancellation(t *testing.T) {
+	// Build a small valid bitstream (2 frames).
+	var stream bytes.Buffer
+	enc := g729.NewEncoder(g729.Config{Variant: g729.VariantG729A, EnableVAD: false})
+	var frame [10]byte
+	silence := make([]int16, 80)
+	for i := 0; i < 2; i++ {
+		n, _, err := enc.Encode(frame[:], silence)
+		if err != nil || n != 10 {
+			t.Fatalf("encode: n=%d err=%v", n, err)
+		}
+		stream.Write(frame[:n])
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	r := g729.NewReader(bytes.NewReader(stream.Bytes()))
+	r.SetContext(ctx)
+
+	out := make([]byte, 320)
+	_, err := r.Read(out)
+	if err == nil {
+		t.Fatal("expected context error, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+}
+
+// TestReaderContextNotCancelledAllowsRead verifies that Read proceeds normally
+// when the attached context is not yet cancelled.
+func TestReaderContextNotCancelledAllowsRead(t *testing.T) {
+	var stream bytes.Buffer
+	enc := g729.NewEncoder(g729.Config{Variant: g729.VariantG729A, EnableVAD: false})
+	var frame [10]byte
+	silence := make([]int16, 80)
+	n, _, err := enc.Encode(frame[:], silence)
+	if err != nil || n != 10 {
+		t.Fatalf("encode: n=%d err=%v", n, err)
+	}
+	stream.Write(frame[:n])
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := g729.NewReader(bytes.NewReader(stream.Bytes()))
+	r.SetContext(ctx)
+
+	out := make([]byte, 160)
+	nRead, err := r.Read(out)
+	if err != nil && err != io.EOF {
+		t.Fatalf("Read with live context: %v", err)
+	}
+	if nRead == 0 {
+		t.Error("expected some bytes, got 0")
 	}
 }
 
