@@ -45,6 +45,9 @@ type Config struct {
 	TargetDelay time.Duration
 
 	// MaxDelay is the maximum allowable playout delay before late packets are discarded (default: 200ms).
+	// The value is truncated down to a whole number of 10 ms G.729 frames internally, so for example
+	// MaxDelay=25ms behaves identically to MaxDelay=20ms (both map to 2 slots). Use multiples of 10ms
+	// to get the exact window you intend.
 	MaxDelay time.Duration
 }
 
@@ -121,7 +124,7 @@ func New(cfg Config) *Buffer {
 		max = target
 	}
 
-	// Convert MaxDelay to a slot count, capped at ring buffer size.
+	// Convert MaxDelay to a slot count using integer truncation (rounded down to whole frames).
 	maxSlots := int(max / (rtp.FrameDurationMs * time.Millisecond))
 	if maxSlots < 1 {
 		maxSlots = 1
