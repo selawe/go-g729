@@ -174,7 +174,7 @@ func (w *Writer) Close() error {
 	return nil
 }
 
-// Reader implements an io.Reader that reads a G.729 bitstream from an underlying
+// Reader implements io.ReadCloser that reads a G.729 bitstream from an underlying
 // io.Reader and decompresses it into an outgoing stream of 16-bit linear PCM
 // audio (8 kHz, mono, little-endian).
 //
@@ -203,6 +203,17 @@ func NewReader(r io.Reader) *Reader {
 		r:   r,
 		dec: NewDecoder(),
 	}
+}
+
+// Close closes the underlying reader if it implements io.Closer.
+// Symmetric with Writer.Close: callers that created the underlying reader
+// may prefer to close it themselves; this method exists for callers that
+// hand ownership to Reader.
+func (r *Reader) Close() error {
+	if closer, ok := r.r.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // Read decompresses G.729 bitstream frames from the underlying reader and copies

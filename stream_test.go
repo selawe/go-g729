@@ -190,6 +190,24 @@ func TestStreamReaderRejectsNon10ByteFrames(t *testing.T) {
 	}
 }
 
+// TestReaderClose verifies that Close delegates to the underlying io.Closer
+// when present, and returns nil for non-closer readers.
+func TestReaderClose(t *testing.T) {
+	// bytes.Reader does not implement io.Closer — Close should return nil.
+	r := g729.NewReader(bytes.NewReader([]byte{}))
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close on non-closer: want nil, got %v", err)
+	}
+
+	// A reader wrapping an io.ReadCloser — Close must propagate the call.
+	pr, pw := io.Pipe()
+	pw.Close() // unblock any future read
+	rCloser := g729.NewReader(pr)
+	if err := rCloser.Close(); err != nil {
+		t.Fatalf("Close on io.ReadCloser: want nil, got %v", err)
+	}
+}
+
 // TestStreamReaderErrorSurfacedAfterPCMDrain verifies that a mid-stream read
 // error is preserved and surfaced on the following Read call after buffered
 // PCM has been drained — the io.Reader contract must not silently swallow it.
