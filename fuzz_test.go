@@ -2,6 +2,7 @@ package g729
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 )
 
@@ -177,6 +178,81 @@ func FuzzEncode(f *testing.F) {
 		out := make([]int16, 80)
 		if err := dec.Decode(out, dst[:n]); err != nil {
 			t.Errorf("decode of encoded frame failed: %v", err)
+		}
+	})
+}
+
+// FuzzEncodeStateful tests the encoder over a multi-frame sequence using a
+// single persistent encoder instance, exercising accumulated state such as
+// MA predictor history, freqPrev, excErr, and past excitation buffers.
+//
+// data is interpreted as a stream of 160-byte blocks (80 int16 PCM samples
+// each); any trailing bytes that don't fill a complete block are ignored.
+// The encoder must never panic and must always produce a valid 10-byte speech
+// frame (EnableVAD=false) regardless of input values.
+//
+// Run: go test -fuzz=FuzzEncodeStateful -fuzztime=5m .
+func FuzzEncodeStateful(f *testing.F) {
+	// Seed: silence (8 frames = 80 ms)
+	f.Add(make([]byte, 160*8))
+
+	// Seed: max positive amplitude (8 frames)
+	{
+		buf := make([]byte, 160*8)
+		for i := 0; i < 80*8; i++ {
+			binary.LittleEndian.PutUint16(buf[i*2:], 0x7FFF)
+		}
+		f.Add(buf)
+	}
+
+	// Seed: alternating extremes (8 frames)
+	{
+		buf := make([]byte, 160*8)
+		for i := 0; i < 80*8; i++ {
+			v := uint16(0x7FFF)
+			if i%2 == 1 {
+				v = 0x8000
+			}
+			binary.LittleEndian.PutUint16(buf[i*2:], v)
+		}
+		f.Add(buf)
+	}
+
+	// Seed: 440 Hz tone for 4 frames
+	{
+		const frames = 4
+		buf := make([]byte, 160*frames)
+		for i := 0; i < 80*frames; i++ {
+			v := int16(16000.0 * math.Sin(2*math.Pi*440.0*float64(i)/8000.0))
+			binary.LittleEndian.PutUint16(buf[i*2:], uint16(v))
+		}
+		f.Add(buf)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		const blockBytes = 160
+		if len(data) < blockBytes {
+			return
+		}
+
+		enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+		var dst [10]byte
+		var frame [80]int16
+
+		for off := 0; off+blockBytes <= len(data); off += blockBytes {
+			block := data[off : off+blockBytes]
+			for i := range frame {
+				frame[i] = int16(binary.LittleEndian.Uint16(block[i*2:]))
+			}
+			n, fType, err := enc.Encode(dst[:], frame[:])
+			if err != nil {
+				t.Errorf("frame at offset %d: unexpected error: %v", off, err)
+				return
+			}
+			if n != 10 || fType != FrameSpeech {
+				t.Errorf("frame at offset %d: expected 10-byte FrameSpeech, got n=%d type=%v",
+					off, n, fType)
+			}
 		}
 	})
 }
