@@ -54,6 +54,14 @@ type Writer struct {
 
 // NewWriter creates a new streaming G.729 encoder writing to w.
 // cfg.EnableVAD must be false; returns ErrVADNotSupportedInStream otherwise.
+//
+// Each encoded frame produces a 10-byte Write call to w. For network or file sinks
+// where per-syscall overhead matters, wrap w in a bufio.Writer before passing it here:
+//
+//	bw := bufio.NewWriterSize(conn, 1024) // buffers ~100 frames per flush
+//	sw, err := g729.NewWriter(bw, cfg)
+//	...
+//	bw.Flush() // flush at end of session or packet boundary
 func NewWriter(w io.Writer, cfg Config) (*Writer, error) {
 	if cfg.EnableVAD {
 		return nil, ErrVADNotSupportedInStream
