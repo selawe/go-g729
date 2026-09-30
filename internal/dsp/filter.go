@@ -1,6 +1,8 @@
 package dsp
 
 import (
+	"fmt"
+
 	"github.com/selawe/go-g729/internal/params"
 	"github.com/selawe/go-g729/internal/tables"
 )
@@ -87,12 +89,10 @@ func SynthesisFilter(out, x, a, mem []float32, update bool) {
 	_ = aCoeffs[params.M-1]
 
 	var buf [params.L_FRAME + params.M]float32
-	var yy []float32
-	if l+params.M <= len(buf) {
-		yy = buf[:l+params.M]
-	} else {
-		yy = make([]float32, l+params.M)
+	if l+params.M > len(buf) {
+		panic(fmt.Sprintf("dsp: SynthesisFilter input length %d exceeds L_FRAME (%d)", l, params.L_FRAME))
 	}
+	yy := buf[:l+params.M]
 
 	if mem != nil && len(mem) >= params.M {
 		copy(yy[:params.M], mem[:params.M])
@@ -141,12 +141,10 @@ func Residue(out, x, a, mem []float32, update bool) {
 	_ = aCoeffs[params.M-1]
 
 	var buf [params.L_FRAME + params.M]float32
-	var xx []float32
-	if l+params.M <= len(buf) {
-		xx = buf[:l+params.M]
-	} else {
-		xx = make([]float32, l+params.M)
+	if l+params.M > len(buf) {
+		panic(fmt.Sprintf("dsp: Residue input length %d exceeds L_FRAME (%d)", l, params.L_FRAME))
 	}
+	xx := buf[:l+params.M]
 
 	if mem != nil && len(mem) >= params.M {
 		copy(xx[:params.M], mem[:params.M])
