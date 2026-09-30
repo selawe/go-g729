@@ -124,7 +124,7 @@ akan terlihat di callback alih-alih menghasilkan koefisien LPC yang diam-diam sa
 - Update doc comment jelas: "rounded down to whole 10 ms frames".
 - Atau ubah ke `math.Ceil` (breaking untuk pengguna yang bergantung pada perilaku sekarang; pilih doc-only).
 
-**Status:** ⏳ Pending
+**Status:** ✅ Selesai (commit `d8c7d7d`)
 
 ---
 
@@ -136,7 +136,7 @@ akan terlihat di callback alih-alih menghasilkan koefisien LPC yang diam-diam sa
 **Rencana:**
 - Update doc comment `NewWriter`: sarankan `bufio.NewWriterSize(w, 1024)` untuk network sinks.
 
-**Status:** ⏳ Pending
+**Status:** ✅ Selesai (commit `038f35f`)
 
 ---
 
@@ -147,14 +147,14 @@ akan terlihat di callback alih-alih menghasilkan koefisien LPC yang diam-diam sa
 
 Encoder passes `iSubfr` (0 or 40 samples). Nama "subframe" misleading — should be `subfrOffset` atau boolean.
 
-**Status:** ⏳ Pending
+**Status:** ✅ Selesai (commit `fde3519`)
 
 ---
 
 ### 10. `PopInto` doc: menyebutkan `Pop` allocates
 **File:** `jitter/jitter.go:284`
 
-**Status:** ⏳ Pending
+**Status:** ✅ Selesai (commit `d573ff1`)
 
 ---
 
