@@ -16,7 +16,8 @@ const (
 //   - h: impulse response of weighted synthesis filter (40 samples)
 //   - t0: integer pitch lag from closed-loop search
 //   - pitchSharp: pitch sharpening factor (clipped pitch gain)
-//   - subframe: 0 for 1st subframe, 1 for 2nd subframe
+//   - subfrOffset: sample offset of the current subframe within the frame
+//     (0 for 1st subframe, params.L_SUBFR=40 for 2nd subframe)
 //   - extra: pointer to time budget state carried across subframes (optional, can be nil)
 //
 // Returns:
@@ -24,7 +25,7 @@ const (
 //   - sign: 4-bit pulse sign index
 //   - code: selected algebraic excitation codevector (with pitch sharpening if t0 < 40)
 //   - y: filtered algebraic codeword (code convolved with h)
-func SearchAlgebraicFull(x, h []float32, t0 int, pitchSharp float32, subframe int, extra *int) (index int, sign int, code [params.L_SUBFR]float32, y [params.L_SUBFR]float32) {
+func SearchAlgebraicFull(x, h []float32, t0 int, pitchSharp float32, subfrOffset int, extra *int) (index int, sign int, code [params.L_SUBFR]float32, y [params.L_SUBFR]float32) {
 	// 1. Copy impulse response and include pitch contribution if t0 < 40.
 	var hBuf [params.L_SUBFR]float32
 	copy(hBuf[:], h[:params.L_SUBFR])
@@ -105,11 +106,11 @@ func SearchAlgebraicFull(x, h []float32, t0 int, pitchSharp float32, subframe in
 	// 7. Time budget for search.
 	timeBudget := MaxTime
 	if extra != nil {
-		if subframe == 0 {
+		if subfrOffset == 0 {
 			*extra = 30
 		}
 		timeBudget += *extra
-	} else if subframe == 0 {
+	} else if subfrOffset == 0 {
 		timeBudget += 30
 	}
 
