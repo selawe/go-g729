@@ -234,6 +234,8 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 // PopInto retrieves the next chronological 10 ms G.729 frame into dst without heap allocation.
 // dst must have length >= rtp.FrameBytes (10) to accommodate any valid frame size (speech or SID).
 //
+// Prefer PopInto over Pop in hot paths: Pop allocates a new []byte per non-loss frame.
+//
 // Returns:
 //   - n: number of bytes copied into dst (10 for speech, 2 for SID, 0 for loss/DTX suppressed frame),
 //   - isLoss: true if this slot represents packet loss (trigger PLC in Decoder),
@@ -307,6 +309,7 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 }
 
 // Pop retrieves the next chronological 10 ms G.729 frame.
+// It allocates a new []byte for each non-loss frame; use PopInto to avoid allocation.
 //
 // Returns:
 //   - frame: byte slice (10-byte speech or 2-byte SID) if a valid frame is ready,
