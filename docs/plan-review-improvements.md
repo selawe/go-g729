@@ -106,7 +106,12 @@ ke telemetry. Berguna untuk deteksi bit-error rate di jaringan.
 - Tambah di `DiagnosticStats.LPCFallback bool` untuk sinyal per-frame.
 - Test: input yang triggers fallback → verify diagnostic bit set.
 
-**Status:** ⏳ Pending
+**Catatan implementasi:** Kedua fallback path secara matematis tidak dapat dicapai dengan input
+autocorrelation yang valid (stability check mendahului kedua clamp site). Namun flag tetap
+berguna sebagai defense-in-depth — jika patologi numerik tak terduga terjadi, `LPCFallback=true`
+akan terlihat di callback alih-alih menghasilkan koefisien LPC yang diam-diam salah.
+
+**Status:** ✅ Selesai (commit `236debf`)
 
 ---
 
