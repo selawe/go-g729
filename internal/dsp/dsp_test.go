@@ -21,7 +21,7 @@ func TestLevinsonAR1(t *testing.T) {
 			r[k] = float32(math.Pow(float64(rho), float64(k)))
 		}
 
-		a, rc, err := Levinson(r[:], params.M)
+		a, rc, _, err := Levinson(r[:], params.M)
 		if err != nil {
 			t.Fatalf("Levinson returned unexpected error for rho=%f: %v", rho, err)
 		}
@@ -76,7 +76,7 @@ func TestLevinsonAR2(t *testing.T) {
 		r[k] = float32(a1True*float64(r[k-1]) + a2True*float64(r[k-2]))
 	}
 
-	a, _, err := Levinson(r[:], params.M)
+	a, _, _, err := Levinson(r[:], params.M)
 	if err != nil {
 		t.Fatalf("Levinson error on AR(2): %v", err)
 	}
@@ -101,42 +101,66 @@ func TestLevinsonAR2(t *testing.T) {
 func TestLevinsonStability(t *testing.T) {
 	// 1. Non-positive r[0]
 	rZero := [11]float32{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	_, _, err := Levinson(rZero[:], params.M)
+	_, _, _, err := Levinson(rZero[:], params.M)
 	if err != ErrSingularMatrix {
 		t.Errorf("expected ErrSingularMatrix for r[0]=0, got %v", err)
 	}
 
 	rNeg := [11]float32{-5.0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	_, _, err = Levinson(rNeg[:], params.M)
+	_, _, _, err = Levinson(rNeg[:], params.M)
 	if err != ErrSingularMatrix {
 		t.Errorf("expected ErrSingularMatrix for r[0]<0, got %v", err)
 	}
 
 	// 2. NaN in r[0]
 	rNaN := [11]float32{float32(math.NaN()), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	_, _, err = Levinson(rNaN[:], params.M)
+	_, _, _, err = Levinson(rNaN[:], params.M)
 	if err != ErrSingularMatrix {
 		t.Errorf("expected ErrSingularMatrix for NaN, got %v", err)
 	}
 
 	// 3. Short slice
 	rShort := [5]float32{1, 0.5, 0.2, 0.1, 0.05}
-	_, _, err = Levinson(rShort[:], params.M)
+	_, _, _, err = Levinson(rShort[:], params.M)
 	if err != ErrInvalidInput {
 		t.Errorf("expected ErrInvalidInput for short slice, got %v", err)
 	}
 
 	// 4. Invalid order m
-	_, _, err = Levinson(rZero[:], 0)
+	_, _, _, err = Levinson(rZero[:], 0)
 	if err != ErrInvalidInput {
 		t.Errorf("expected ErrInvalidInput for m=0, got %v", err)
 	}
 
 	// 5. Unstable reflection coefficient (|r[1]| >= r[0])
 	rUnstable := [11]float32{1.0, 1.5, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	_, _, err = Levinson(rUnstable[:], params.M)
+	_, _, _, err = Levinson(rUnstable[:], params.M)
 	if err != ErrUnstableFilter {
 		t.Errorf("expected ErrUnstableFilter for |r[1]| >= r[0], got %v", err)
+	}
+}
+
+// TestLevinsonFallbackReturn verifies that Levinson returns fallback=false for
+// well-formed autocorrelation inputs. The fallback guard is mathematically
+// unreachable when the stability checks in the function body hold, so this
+// serves as a regression test that the new return value is properly wired.
+func TestLevinsonFallbackReturn(t *testing.T) {
+	testCases := []struct {
+		name string
+		r    [11]float32
+	}{
+		{"AR1 rho=0.9", [11]float32{1, 0.9, 0.81, 0.729, 0.656, 0.59, 0.53, 0.47, 0.42, 0.38, 0.34}},
+		{"AR1 rho=0.5", [11]float32{1, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625, 0.0078125, 0.00390625, 0.001953125, 0.0009765625}},
+		{"flat spectrum", [11]float32{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+	}
+	for _, tc := range testCases {
+		_, _, fallback, err := Levinson(tc.r[:], params.M)
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+		}
+		if fallback {
+			t.Errorf("%s: fallback=true for well-formed input (unexpected numerical pathology)", tc.name)
+		}
 	}
 }
 
@@ -378,7 +402,7 @@ func TestDSPConcurrency(t *testing.T) {
 
 				HighPassFilter(speech[:params.L_FRAME], &hpfState)
 				Autocorr(r, speech, nil, params.M)
-				a, _, err := Levinson(r, params.M)
+				a, _, _, err := Levinson(r, params.M)
 				if err == nil {
 					Residue(out, x, a[:], mem[:], true)
 					SynthesisFilter(x, out, a[:], mem[:], true)
@@ -427,7 +451,7 @@ func BenchmarkLevinson(b *testing.B) {
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		_, _, _ = Levinson(r[:], params.M)
+		_, _, _, _ = Levinson(r[:], params.M)
 	}
 }
 

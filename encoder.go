@@ -205,7 +205,7 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	}
 
 	// 4. Levinson-Durbin
-	a, rc, levErr := dsp.Levinson(r[:params.MP1], params.M)
+	a, rc, levFallback, levErr := dsp.Levinson(r[:params.MP1], params.M)
 	if levErr != nil {
 		a = e.oldA
 	} else {
@@ -259,8 +259,9 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 				FrameType:    ft,
 				EnergyDB:     energyDB,
 				ZeroCrossing: zeroCrossingRate(speech),
-				VADMarker:    marker, // use marker variable, not hardcoded vad.Noise
+				VADMarker:    marker,
 				ClippedCount: clippedCount,
+				LPCFallback:  levFallback,
 			})
 
 			e.stats.TotalFrames++
@@ -584,6 +585,7 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 		GainPitch:    subfrGainPit,
 		GainCode:     subfrGainCode,
 		ClippedCount: clippedCount,
+		LPCFallback:  levFallback,
 	})
 
 	e.stats.TotalFrames++

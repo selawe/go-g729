@@ -20,18 +20,23 @@ import (
 //
 // Arithmetic is computed in float64 internally for optimal numerical stability,
 // then cast to float32 upon return.
-func Levinson(r []float32, m int) (a [params.M + 1]float32, rc [params.M]float32, err error) {
+//
+// fallback is true when the internal prediction error was clamped to a minimum
+// floor (err64 <= 0 guard). This should never occur for well-formed autocorrelation
+// inputs but signals a numerical pathology if it does — observable via
+// DiagnosticStats.LPCFallback when used through the encoder.
+func Levinson(r []float32, m int) (a [params.M + 1]float32, rc [params.M]float32, fallback bool, err error) {
 	a[0] = 1.0
 	if m <= 0 || m > params.M {
-		return a, rc, ErrInvalidInput
+		return a, rc, false, ErrInvalidInput
 	}
 	if len(r) < m+1 {
-		return a, rc, ErrInvalidInput
+		return a, rc, false, ErrInvalidInput
 	}
 
 	r0 := float64(r[0])
 	if r0 <= 0 || math.IsNaN(r0) || math.IsInf(r0, 0) {
-		return a, rc, ErrSingularMatrix
+		return a, rc, false, ErrSingularMatrix
 	}
 
 	var (
@@ -46,7 +51,7 @@ func Levinson(r []float32, m int) (a [params.M + 1]float32, rc [params.M]float32
 	if math.Abs(rc0) >= 1.0 {
 		rc[0] = float32(rc0)
 		a[1] = float32(rc0)
-		return a, rc, ErrUnstableFilter
+		return a, rc, false, ErrUnstableFilter
 	}
 
 	rc64[0] = rc0
@@ -54,6 +59,7 @@ func Levinson(r []float32, m int) (a [params.M + 1]float32, rc [params.M]float32
 	err64 := r0 + r1*rc0
 	if err64 <= 0.0 {
 		err64 = 0.001
+		fallback = true
 	}
 
 	// Higher orders 2 ... m
@@ -72,7 +78,7 @@ func Levinson(r []float32, m int) (a [params.M + 1]float32, rc [params.M]float32
 			for k := 0; k < params.M; k++ {
 				rc[k] = float32(rc64[k])
 			}
-			return a, rc, ErrUnstableFilter
+			return a, rc, fallback, ErrUnstableFilter
 		}
 		rc64[i-1] = rci
 
@@ -88,6 +94,7 @@ func Levinson(r []float32, m int) (a [params.M + 1]float32, rc [params.M]float32
 		err64 += rci * s
 		if err64 <= 0.0 {
 			err64 = 0.001
+			fallback = true
 		}
 	}
 
@@ -98,5 +105,5 @@ func Levinson(r []float32, m int) (a [params.M + 1]float32, rc [params.M]float32
 		rc[k] = float32(rc64[k])
 	}
 
-	return a, rc, nil
+	return a, rc, fallback, nil
 }

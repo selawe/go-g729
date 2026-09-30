@@ -360,6 +360,37 @@ func BenchmarkEncodeG729Full(b *testing.B) {
 	}
 }
 
+// TestDiagnosticLPCFallback verifies that DiagnosticStats.LPCFallback is correctly
+// wired through the encoder. For well-formed speech input the field must be false
+// (the Levinson fallback guard should never fire). This test ensures the field is
+// present, correctly initialized, and propagated to every diagnostic callback.
+func TestDiagnosticLPCFallback(t *testing.T) {
+	var seenFallback []bool
+	cfg := ProfileDiagnostic(func(s DiagnosticStats) {
+		seenFallback = append(seenFallback, s.LPCFallback)
+	})
+
+	enc := NewEncoder(cfg)
+	signal := generateSine(440.0, 800, 8000.0)
+	var dst [10]byte
+
+	for i := 0; i < 10; i++ {
+		frame := signal[i*80 : (i+1)*80]
+		if _, _, err := enc.Encode(dst[:], frame); err != nil {
+			t.Fatalf("Encode frame %d failed: %v", i, err)
+		}
+	}
+
+	if len(seenFallback) == 0 {
+		t.Fatal("diagnostic callback was never invoked")
+	}
+	for i, fb := range seenFallback {
+		if fb {
+			t.Errorf("frame %d: LPCFallback=true for normal speech input (unexpected numerical pathology)", i)
+		}
+	}
+}
+
 func BenchmarkEncodeG729A_WithVAD(b *testing.B) {
 	cfg := DefaultConfig()
 	cfg.Variant = VariantG729A

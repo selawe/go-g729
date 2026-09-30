@@ -18,7 +18,7 @@ func generateStableLPC(rng *rand.Rand) [params.M + 1]float32 {
 	}
 	var r [params.M + 1]float32
 	dsp.Autocorr(r[:], speech, nil, params.M)
-	a, _, err := dsp.Levinson(r[:], params.M)
+	a, _, _, err := dsp.Levinson(r[:], params.M)
 	if err != nil {
 		// Fallback to simple bandwidth expanded filter
 		a[0] = 1.0

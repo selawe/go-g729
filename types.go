@@ -38,6 +38,10 @@ type DiagnosticStats struct {
 	GainPitch    [2]float32 // Subframe pitch gains (g_p)
 	GainCode     [2]float32 // Subframe algebraic codebook gains (g_c)
 	ClippedCount int        // Number of input samples that saturated (|x| >= 32760)
+	// LPCFallback is true when the Levinson-Durbin prediction error clamping path
+	// fired during this frame's LPC analysis. Non-zero under pathological numerical
+	// conditions; if you see this, investigate the input signal for saturation or NaN.
+	LPCFallback bool
 }
 
 // DiagnosticCallback is a telemetry hook invoked after each frame is encoded.
