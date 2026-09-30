@@ -162,6 +162,25 @@ func TestUnpackErrors(t *testing.T) {
 	}
 }
 
+func TestUnpackMaxFramesLimit(t *testing.T) {
+	// Exactly at the limit: MaxFramesPerPacket frames — must succeed.
+	maxPayload := make([]byte, rtp.MaxFramesPerPacket*rtp.FrameBytes)
+	got, info, err := rtp.Unpack(maxPayload)
+	if err != nil {
+		t.Fatalf("Unpack at limit: unexpected error: %v", err)
+	}
+	if len(got) != rtp.MaxFramesPerPacket || info.NumFrames != rtp.MaxFramesPerPacket {
+		t.Errorf("Unpack at limit: got %d frames, want %d", len(got), rtp.MaxFramesPerPacket)
+	}
+
+	// One frame over the limit — must be rejected.
+	overPayload := make([]byte, (rtp.MaxFramesPerPacket+1)*rtp.FrameBytes)
+	_, _, err = rtp.Unpack(overPayload)
+	if err == nil {
+		t.Fatal("Unpack over limit: expected ErrInvalidPayload, got nil")
+	}
+}
+
 func TestTimestamp(t *testing.T) {
 	base := uint32(1000)
 	if ts := rtp.TimestampForFrame(base, 0); ts != 1000 {

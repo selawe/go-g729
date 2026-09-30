@@ -45,6 +45,12 @@ const (
 	TimestampIncrement = 80
 )
 
+// MaxFramesPerPacket is the maximum number of G.729 speech frames accepted per RTP
+// packet by Unpack. Payloads exceeding this limit (> 1280 ms of audio) are rejected
+// with ErrInvalidPayload to prevent excessive heap allocation on untrusted input.
+// Use UnpackInto with a fixed-size destination buffer for tighter per-call bounds.
+const MaxFramesPerPacket = 128
+
 // Sentinel errors.
 var (
 	// ErrInvalidPayload is returned when a payload byte slice cannot be
@@ -198,6 +204,10 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 
 	case len(payload)%FrameBytes == 0:
 		n := len(payload) / FrameBytes
+		if n > MaxFramesPerPacket {
+			return nil, PayloadInfo{}, fmt.Errorf("%w: %d frames exceeds MaxFramesPerPacket (%d)",
+				ErrInvalidPayload, n, MaxFramesPerPacket)
+		}
 		frames := make([][]byte, n)
 		for i := range frames {
 			frame := make([]byte, FrameBytes)
