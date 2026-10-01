@@ -25,6 +25,11 @@ type PostFilterState struct {
 	// res2Buf contains PIT_MAX (143) samples of past residual + L_SUBFR (40) current samples = 183 samples.
 	res2Buf [params.PIT_MAX + params.L_SUBFR]float32
 
+	// memRes holds the last M samples of the synthesis filter output for the A(z/gamma2_pst)
+	// residue filter history. The C reference achieves this via buffer indexing (syn[-M..-1]);
+	// here we carry it explicitly across subframe/frame boundaries.
+	memRes [params.M]float32
+
 	// memSynPst holds the 10-sample filter memory for short-term synthesis filter 1/A(z/gamma1_pst).
 	memSynPst [params.M]float32
 
@@ -46,6 +51,9 @@ func NewPostFilterState() *PostFilterState {
 func (s *PostFilterState) Reset() {
 	for i := range s.res2Buf {
 		s.res2Buf[i] = 0
+	}
+	for i := range s.memRes {
+		s.memRes[i] = 0
 	}
 	for i := range s.memSynPst {
 		s.memSynPst[i] = 0
@@ -103,9 +111,11 @@ func PostFilterB(syn []float32, az []float32, pitchLags [2]int, vad int, state *
 		WeightAz(azSubfr, Gamma2Pst, ap3[:])
 		WeightAz(azSubfr, Gamma1Pst, ap4[:])
 
-		// 3. Inverse filter syn[] through A(z/gamma2_pst) to get current res2
+		// 3. Inverse filter syn[] through A(z/gamma2_pst) to get current res2.
+		// memRes carries the last M samples of syn across subframe/frame boundaries,
+		// matching the C reference which accesses syn[-M..-1] via pointer arithmetic.
 		res2 := state.res2Buf[params.PIT_MAX : params.PIT_MAX+params.L_SUBFR]
-		dsp.Residue(res2, syn[iSubfr:iSubfr+params.L_SUBFR], ap3[:], nil, false)
+		dsp.Residue(res2, syn[iSubfr:iSubfr+params.L_SUBFR], ap3[:], state.memRes[:], true)
 
 		// 4. Pitch postfiltering on res2
 		if vad == 1 {

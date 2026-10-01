@@ -421,7 +421,9 @@ func TestDecoderOfficialTestVector(t *testing.T) {
 	overallSNR, segSNR := computeSNR(refPcm, decoded)
 	t.Logf("Decoder vs Official TEST.pst: Overall SNR = %.2f dB, Segmental SNR = %.2f dB", overallSNR, segSNR)
 
-	if overallSNR < 15.0 {
+	// Gate raised from 15 dB to 28 dB after fixing postfilter residue history bug
+	// (memRes nil → correct state). Measured: 32.81 dB; 4.8 dB regression margin.
+	if overallSNR < 28.0 {
 		t.Errorf("Decoder SNR vs official reference too low: %.2f dB", overallSNR)
 	}
 }
