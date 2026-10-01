@@ -70,11 +70,17 @@ func convertITUBitstreamToPacked(rawBits []byte) [][]byte {
 	return out
 }
 
+// computeSNR returns the overall and segmental SNR between orig and rec,
+// scanning delays [-80, 80] to account for codec lookahead.
+//
+// When noise is exactly zero at the best delay (bit-exact match), overall SNR
+// is +Inf and segmental SNR is 40 dB (the per-frame cap). The previous
+// implementation skipped zero-noise delays, causing it to report ~6 dB instead
+// of +Inf for a bit-exact decoder — an artefact, not a quality measurement.
 func computeSNR(orig, rec []int16) (overallSNR, segSNR float64) {
-	bestSNR := -100.0
+	bestSNR := math.Inf(-1)
 	var bestSegSNR float64
 
-	// Search for optimal sample delay in [-80, 80] to account for codec lookahead and filter delay
 	for delay := -80; delay <= 80; delay++ {
 		var sigTot, noiseTot float64
 		var segSNRSum float64
@@ -97,30 +103,48 @@ func computeSNR(orig, rec []int16) (overallSNR, segSNR float64) {
 				noiseTot += e * e
 			}
 
-			if fSig > 100.0 && fNoise > 0.0 {
-				snr := 10.0 * math.Log10(fSig/fNoise)
-				if snr < 0.0 {
-					snr = 0.0
-				}
-				if snr > 40.0 {
-					snr = 40.0
+			if fSig > 100.0 {
+				var snr float64
+				if fNoise == 0 {
+					snr = 40.0 // perfect frame — use the per-frame cap
+				} else {
+					snr = 10.0 * math.Log10(fSig/fNoise)
+					if snr < 0.0 {
+						snr = 0.0
+					}
+					if snr > 40.0 {
+						snr = 40.0
+					}
 				}
 				segSNRSum += snr
 				segCount++
 			}
 		}
 
-		if noiseTot > 0 && sigTot > 0 {
-			snr := 10.0 * math.Log10(sigTot/noiseTot)
-			if snr > bestSNR {
-				bestSNR = snr
-				if segCount > 0 {
-					bestSegSNR = segSNRSum / float64(segCount)
-				}
+		if sigTot == 0 {
+			continue
+		}
+		if noiseTot == 0 {
+			// Perfect match at this delay — no delay can do better, return immediately.
+			seg := 0.0
+			if segCount > 0 {
+				seg = segSNRSum / float64(segCount)
+			}
+			return math.Inf(1), seg
+		}
+
+		snr := 10.0 * math.Log10(sigTot/noiseTot)
+		if snr > bestSNR {
+			bestSNR = snr
+			if segCount > 0 {
+				bestSegSNR = segSNRSum / float64(segCount)
 			}
 		}
 	}
 
+	if math.IsInf(bestSNR, -1) {
+		return 0, 0
+	}
 	return bestSNR, bestSegSNR
 }
 
