@@ -57,7 +57,7 @@ func StabilizeLSF(buf *[params.M]float32, minGap float32) {
 		buf[0] = LLimit
 	}
 
-	// 3. Enforce minimum gap between adjacent frequencies
+	// 3. Forward pass: enforce minimum gap between adjacent frequencies
 	for j := 0; j < params.M-1; j++ {
 		if buf[j+1]-buf[j] < minGap {
 			buf[j+1] = buf[j] + minGap
@@ -67,6 +67,20 @@ func StabilizeLSF(buf *[params.M]float32, minGap float32) {
 	// 4. Enforce upper limit
 	if buf[params.M-1] > MLimit {
 		buf[params.M-1] = MLimit
+	}
+
+	// 5. Backward pass: the forward pass may push buf[M-1] above MLimit; the
+	// upper-limit clamp reduces it, which can leave buf[M-2] closer than minGap
+	// to buf[M-1]. Walk backwards to restore the minGap invariant.
+	for j := params.M - 2; j >= 0; j-- {
+		if buf[j+1]-buf[j] < minGap {
+			buf[j] = buf[j+1] - minGap
+		}
+	}
+
+	// 6. Re-enforce lower limit: the backward pass may pull buf[0] below LLimit.
+	if buf[0] < LLimit {
+		buf[0] = LLimit
 	}
 }
 

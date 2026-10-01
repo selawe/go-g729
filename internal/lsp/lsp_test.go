@@ -120,6 +120,37 @@ func TestLSPStabilize(t *testing.T) {
 	}
 }
 
+// TestStabilizeLSFUpperBoundaryGap verifies that StabilizeLSF enforces minGap
+// even when the forward pass would push buf[M-1] above MLimit and the clamp
+// leaves buf[M-2] too close to the clamped value.
+func TestStabilizeLSFUpperBoundaryGap(t *testing.T) {
+	// Construct a case where the last two LSFs are packed near MLimit.
+	// After the forward pass buf[9] = 3.130 + Gap3 = 3.1692 > MLimit,
+	// which gets clamped to 3.135. Without the backward pass,
+	// gap(buf[8], buf[9]) = 3.135 - 3.130 = 0.005 < Gap3.
+	lsf := [params.M]float32{
+		0.20, 0.60, 1.00, 1.40, 1.80,
+		2.20, 2.60, 2.90, 3.130, 3.131,
+	}
+	minGap := Gap3 // 0.0392
+
+	StabilizeLSF(&lsf, minGap)
+
+	if lsf[params.M-1] > MLimit {
+		t.Errorf("lsf[9] = %f > MLimit (%f)", lsf[params.M-1], MLimit)
+	}
+	if lsf[0] < LLimit {
+		t.Errorf("lsf[0] = %f < LLimit (%f)", lsf[0], LLimit)
+	}
+	for i := 1; i < params.M; i++ {
+		gap := lsf[i] - lsf[i-1]
+		if gap < minGap-1e-6 {
+			t.Errorf("gap between lsf[%d]=%.6f and lsf[%d]=%.6f = %.6f < minGap (%.6f)",
+				i-1, lsf[i-1], i, lsf[i], gap, minGap)
+		}
+	}
+}
+
 // TestLSPQuantizeDequantize verifies that QuantizeLSP and DequantizeLSP
 // produce identical reconstructed LSPs and maintain synchronized MA memories.
 func TestLSPQuantizeDequantize(t *testing.T) {
