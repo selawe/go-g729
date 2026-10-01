@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sync/atomic"
 )
 
 // ErrVADNotSupportedInStream is returned by NewWriter when the caller supplies
@@ -51,7 +52,7 @@ var ErrIncompleteFrame = errors.New("g729: stream closed with incomplete trailin
 type Writer struct {
 	w             io.Writer
 	enc           Encoder
-	ctx           context.Context
+	ctx           atomic.Pointer[context.Context]
 	buf           [160]byte // 80 int16 samples = 160 bytes
 	bufLen        int
 	dst           [10]byte
@@ -123,8 +124,8 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 }
 
 func (w *Writer) encodeAndWrite(block []byte) error {
-	if w.ctx != nil {
-		if err := w.ctx.Err(); err != nil {
+	if p := w.ctx.Load(); p != nil {
+		if err := (*p).Err(); err != nil {
 			return err
 		}
 	}
@@ -149,8 +150,14 @@ func (w *Writer) encodeAndWrite(block []byte) error {
 // SetContext attaches ctx to the Writer. Write will return ctx.Err() at the
 // next frame boundary if the context is cancelled or its deadline exceeded.
 // Pass context.Background() to detach a previously set context.
+//
+// SetContext is safe to call concurrently with Write.
 func (w *Writer) SetContext(ctx context.Context) {
-	w.ctx = ctx
+	if ctx == nil || ctx == context.Background() || ctx == context.TODO() {
+		w.ctx.Store(nil)
+		return
+	}
+	w.ctx.Store(&ctx)
 }
 
 // SetFlushMode configures how Close handles trailing partial PCM samples.
@@ -210,7 +217,7 @@ func (w *Writer) Close() error {
 type Reader struct {
 	r       io.Reader
 	dec     Decoder
-	ctx     context.Context
+	ctx     atomic.Pointer[context.Context]
 	buf     [160]byte
 	bufHead int
 	bufTail int
@@ -234,8 +241,14 @@ func NewReader(r io.Reader) *Reader {
 // SetContext attaches ctx to the Reader. Read will return ctx.Err() at the
 // next frame boundary if the context is cancelled or its deadline exceeded.
 // Pass context.Background() to detach a previously set context.
+//
+// SetContext is safe to call concurrently with Read.
 func (r *Reader) SetContext(ctx context.Context) {
-	r.ctx = ctx
+	if ctx == nil || ctx == context.Background() || ctx == context.TODO() {
+		r.ctx.Store(nil)
+		return
+	}
+	r.ctx.Store(&ctx)
 }
 
 // Close closes the underlying reader if it implements io.Closer.
@@ -291,8 +304,8 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		}
 
 		// Check for context cancellation at each frame boundary.
-		if r.ctx != nil {
-			if err := r.ctx.Err(); err != nil {
+		if p := r.ctx.Load(); p != nil {
+			if err := (*p).Err(); err != nil {
 				return totalRead, err
 			}
 		}
