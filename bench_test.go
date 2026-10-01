@@ -2,6 +2,7 @@ package g729
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 	"sort"
 	"sync"
@@ -196,7 +197,7 @@ func BenchmarkSustainedDecoding(b *testing.B) {
 // TestEncoderStructSize asserts that the encoder struct fits within L1 cache
 // budget (< 32 KB). Larger structs cause cache pressure in hot encoding loops.
 func TestEncoderStructSize(t *testing.T) {
-	enc := NewEncoder(DefaultConfig()).(*encoder)
+	enc := NewEncoder(DefaultConfig())
 	size := unsafe.Sizeof(*enc)
 	t.Logf("encoder struct size: %d bytes (%.1f KB)", size, float64(size)/1024)
 	const maxBytes = 32 * 1024
@@ -207,7 +208,7 @@ func TestEncoderStructSize(t *testing.T) {
 
 // TestDecoderStructSize asserts decoder struct size.
 func TestDecoderStructSize(t *testing.T) {
-	dec := NewDecoder().(*decoder)
+	dec := NewDecoder()
 	size := unsafe.Sizeof(*dec)
 	t.Logf("decoder struct size: %d bytes (%.1f KB)", size, float64(size)/1024)
 	const maxBytes = 32 * 1024
@@ -713,5 +714,249 @@ func TestLoadSmokeDeadlineCompliance(t *testing.T) {
 		t.Errorf("%d of %d frames (%.4f%%) exceeded 10 ms — max was %.1f µs",
 			misses, N, missRate, float64(maxNs)/1000)
 	}
+}
+
+// ============================================================================
+// Realtime Jitter Benchmarks — per-frame latency distribution
+// ============================================================================
+
+// reportFrameThroughput records aggregate throughput metrics as benchmark
+// metrics, making frames/s, RTF, and streams/core visible in CI output.
+// framesPerOp is the number of G.729 frames encoded/decoded per b.N iteration.
+func reportFrameThroughput(b *testing.B, framesPerOp int) {
+	b.Helper()
+	if elapsed := b.Elapsed(); elapsed > 0 {
+		frames := framesPerOp * b.N
+		mediaSeconds := float64(frames*80) / 8000.0
+		rtf := elapsed.Seconds() / mediaSeconds
+		xRealtime := 1 / rtf
+
+		b.ReportMetric(float64(frames)/elapsed.Seconds(), "frames/s")
+		b.ReportMetric(float64(frames*80)/elapsed.Seconds(), "samples/s")
+		b.ReportMetric(elapsed.Seconds()/float64(frames)*1e6, "us/frame")
+		b.ReportMetric(rtf, "rtf")
+		b.ReportMetric(xRealtime, "x-realtime")
+		b.ReportMetric(xRealtime, "streams/core")
+	}
+}
+
+// pinBenchmarkToSingleThread locks the goroutine to one OS thread and sets
+// GOMAXPROCS=1 so the distribution reflects true single-stream latency without
+// scheduler preemption from other Ps. Restore by calling the returned func.
+func pinBenchmarkToSingleThread(b *testing.B) func() {
+	b.Helper()
+	prevProcs := runtime.GOMAXPROCS(1)
+	runtime.LockOSThread()
+	return func() {
+		runtime.UnlockOSThread()
+		runtime.GOMAXPROCS(prevProcs)
+	}
+}
+
+// percentileNS returns the p-th percentile (0–1) of a pre-sorted nanosecond slice.
+func percentileNS(sorted []int64, p float64) int64 {
+	if len(sorted) == 1 {
+		return sorted[0]
+	}
+	rank := int(math.Ceil(p*float64(len(sorted)))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= len(sorted) {
+		rank = len(sorted) - 1
+	}
+	return sorted[rank]
+}
+
+// reportFrameTimeDistribution records the per-frame wall-clock latency
+// distribution as benchmark metrics, making jitter visible in CI output and
+// trackable over time alongside throughput numbers.
+//
+// Metrics reported (all µs unless noted):
+//
+//	mean-us, p50-us, p95-us, p99-us, max-us, stddev-us
+//	p99-jitter-us  — P99 minus P50 (tail deviation from median)
+//	max-jitter-us  — max minus P50
+//	p99-deadline   — P99 as fraction of 10 ms frame budget
+//	max-deadline   — max as fraction of 10 ms frame budget
+//	mean-rtf       — mean Real-Time Factor (< 1.0 = real-time capable)
+//	mean-streams/core — concurrent streams one core can sustain at mean latency
+func reportFrameTimeDistribution(b *testing.B, durations []int64) {
+	b.Helper()
+	if len(durations) == 0 {
+		return
+	}
+
+	sorted := append([]int64(nil), durations...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+	var total int64
+	for _, d := range durations {
+		total += d
+	}
+	mean := float64(total) / float64(len(durations))
+
+	var sumSquares float64
+	for _, d := range durations {
+		delta := float64(d) - mean
+		sumSquares += delta * delta
+	}
+	stddev := math.Sqrt(sumSquares / float64(len(durations)))
+
+	p50 := percentileNS(sorted, 0.50)
+	p95 := percentileNS(sorted, 0.95)
+	p99 := percentileNS(sorted, 0.99)
+	maxNS := sorted[len(sorted)-1]
+	meanRTF := mean / float64(frameDuration)
+
+	b.ReportMetric(mean/1e3, "mean-us")
+	b.ReportMetric(float64(p50)/1e3, "p50-us")
+	b.ReportMetric(float64(p95)/1e3, "p95-us")
+	b.ReportMetric(float64(p99)/1e3, "p99-us")
+	b.ReportMetric(float64(maxNS)/1e3, "max-us")
+	b.ReportMetric(stddev/1e3, "stddev-us")
+	b.ReportMetric(float64(p99-p50)/1e3, "p99-jitter-us")
+	b.ReportMetric(float64(maxNS-p50)/1e3, "max-jitter-us")
+	b.ReportMetric(float64(p99)/float64(frameDuration), "p99-deadline")
+	b.ReportMetric(float64(maxNS)/float64(frameDuration), "max-deadline")
+	b.ReportMetric(meanRTF, "mean-rtf")
+	b.ReportMetric(1/meanRTF, "mean-streams/core")
+}
+
+func BenchmarkRealtimeJitter_EncodeG729A(b *testing.B) {
+	defer pinBenchmarkToSingleThread(b)()
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	frame := generateSine(440.0, 80, 8000.0)
+	dst := make([]byte, 10)
+	for i := 0; i < 16; i++ {
+		_, _, _ = enc.Encode(dst, frame)
+	}
+	durations := make([]int64, b.N)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		if _, _, err := enc.Encode(dst, frame); err != nil {
+			b.Fatal(err)
+		}
+		durations[i] = time.Since(start).Nanoseconds()
+	}
+	b.StopTimer()
+
+	reportFrameTimeDistribution(b, durations)
+}
+
+func BenchmarkRealtimeJitter_EncodeG729A_WithVAD(b *testing.B) {
+	defer pinBenchmarkToSingleThread(b)()
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: true})
+	frame := generateSine(440.0, 80, 8000.0)
+	dst := make([]byte, 10)
+	for i := 0; i < 16; i++ {
+		_, _, _ = enc.Encode(dst, frame)
+	}
+	durations := make([]int64, b.N)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		if _, _, err := enc.Encode(dst, frame); err != nil {
+			b.Fatal(err)
+		}
+		durations[i] = time.Since(start).Nanoseconds()
+	}
+	b.StopTimer()
+
+	reportFrameTimeDistribution(b, durations)
+}
+
+func BenchmarkRealtimeJitter_EncodeG729Full(b *testing.B) {
+	defer pinBenchmarkToSingleThread(b)()
+
+	enc := NewEncoder(Config{Variant: VariantG729, EnableVAD: false})
+	frame := generateSine(440.0, 80, 8000.0)
+	dst := make([]byte, 10)
+	for i := 0; i < 16; i++ {
+		_, _, _ = enc.Encode(dst, frame)
+	}
+	durations := make([]int64, b.N)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		if _, _, err := enc.Encode(dst, frame); err != nil {
+			b.Fatal(err)
+		}
+		durations[i] = time.Since(start).Nanoseconds()
+	}
+	b.StopTimer()
+
+	reportFrameTimeDistribution(b, durations)
+}
+
+func BenchmarkRealtimeJitter_Decode(b *testing.B) {
+	defer pinBenchmarkToSingleThread(b)()
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	frame := generateSine(440.0, 80, 8000.0)
+	bits := make([]byte, 10)
+	for i := 0; i < 8; i++ {
+		_, _, _ = enc.Encode(bits, frame)
+	}
+
+	dec := NewDecoder()
+	out := make([]int16, 80)
+	for i := 0; i < 16; i++ {
+		_ = dec.Decode(out, bits)
+	}
+	durations := make([]int64, b.N)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		if err := dec.Decode(out, bits); err != nil {
+			b.Fatal(err)
+		}
+		durations[i] = time.Since(start).Nanoseconds()
+	}
+	b.StopTimer()
+
+	reportFrameTimeDistribution(b, durations)
+}
+
+func BenchmarkRealtimeJitter_EncodeDecodeLoopback(b *testing.B) {
+	defer pinBenchmarkToSingleThread(b)()
+
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	dec := NewDecoder()
+	frame := generateSine(440.0, 80, 8000.0)
+	bits := make([]byte, 10)
+	out := make([]int16, 80)
+	for i := 0; i < 16; i++ {
+		_, _, _ = enc.Encode(bits, frame)
+		_ = dec.Decode(out, bits)
+	}
+	durations := make([]int64, b.N)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		start := time.Now()
+		if _, _, err := enc.Encode(bits, frame); err != nil {
+			b.Fatal(err)
+		}
+		if err := dec.Decode(out, bits); err != nil {
+			b.Fatal(err)
+		}
+		durations[i] = time.Since(start).Nanoseconds()
+	}
+	b.StopTimer()
+
+	reportFrameTimeDistribution(b, durations)
 }
 

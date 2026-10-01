@@ -150,6 +150,12 @@ var (
 
 	// ErrInternalPanic is returned when an internal DSP panic is trapped by panic recovery.
 	ErrInternalPanic = errors.New("g729: internal DSP panic")
+
+	// ErrNilEncoder is returned when a method is called on a nil *Encoder.
+	ErrNilEncoder = errors.New("g729: nil Encoder")
+
+	// ErrNilDecoder is returned when a method is called on a nil *Decoder.
+	ErrNilDecoder = errors.New("g729: nil Decoder")
 )
 
 // buildPanicError formats a recovered panic value as an error wrapping
@@ -189,62 +195,4 @@ type DecoderStats struct {
 	ParityErrors int
 }
 
-// Encoder defines the interface for compressing 8 kHz 16-bit linear PCM audio into G.729 bitstream frames.
-// An Encoder instance is NOT safe for concurrent use across multiple goroutines; each audio stream
-// must have its own Encoder instance.
-type Encoder interface {
-	// Encode processes 80 samples (10 ms) of 16-bit linear PCM audio in src, and writes the encoded
-	// bitstream into dst.
-	//
-	// dst must have capacity of at least 10 bytes.
-	//
-	// Returns:
-	//   - n: number of bytes written to dst (10 for FrameSpeech, 2 for FrameSID, 0 for FrameUntransmitted)
-	//   - frameType: type of the produced frame
-	//   - err: nil on success, or an error if buffer lengths are invalid
-	Encode(dst []byte, src []int16) (n int, frameType FrameType, err error)
-
-	// EncodeBatch encodes multiple consecutive 10 ms speech frames (multiples of 80 int16 samples,
-	// e.g. 160 samples for 20 ms, 320 samples for 40 ms) sequentially into dst.
-	//
-	// dst must have capacity of at least (len(src)/80)*10 bytes.
-	// Returns total bytes written, a slice of FrameType for each encoded frame, or an error.
-	//
-	// For zero-allocation batch encoding in high-throughput transcoders, use EncodeBatchInto.
-	EncodeBatch(dst []byte, src []int16) (n int, frameTypes []FrameType, err error)
-
-	// EncodeBatchInto encodes multiple 10 ms frames without allocating a frameTypes slice.
-	// Caller must provide frameTypes with length >= len(src)/80. Returns total bytes written
-	// and the number of frames actually encoded (may be less than cap on error).
-	EncodeBatchInto(dst []byte, src []int16, frameTypes []FrameType) (n int, numFrames int, err error)
-
-	// Stats returns cumulative operational telemetry for this encoder.
-	Stats() EncoderStats
-
-	// Reset clears all internal state, delay lines, and history buffers to their initial reset state.
-	Reset()
-}
-
-// Decoder defines the interface for decompressing G.729 bitstream frames into 8 kHz 16-bit linear PCM audio.
-// A Decoder instance is NOT safe for concurrent use across multiple goroutines; each audio stream
-// must have its own Decoder instance.
-type Decoder interface {
-	// Decode decompresses a G.729 bitstream frame in src (10 bytes for speech, 2 bytes for SID,
-	// or 0 bytes / nil for packet loss erasure / untransmitted frame) into 80 16-bit PCM samples in dst.
-	//
-	// dst must have capacity of at least 80 samples.
-	//
-	// Returns nil on success, or an error if dst or src lengths are invalid.
-	Decode(dst []int16, src []byte) error
-
-	// DecodeBatch decompresses multiple G.729 bitstream frames sequentially into dst.
-	// dst must have capacity of at least len(frames)*80 samples.
-	DecodeBatch(dst []int16, frames [][]byte) error
-
-	// Stats returns cumulative operational and PLC telemetry for this decoder.
-	Stats() DecoderStats
-
-	// Reset clears all internal state, delay lines, and history buffers to their initial reset state.
-	Reset()
-}
 

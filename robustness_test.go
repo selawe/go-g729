@@ -73,6 +73,48 @@ func TestDecoder_RepeatedPathologicalBitstreams(t *testing.T) {
 	}
 }
 
+// TestNilEncoderReturnsError verifies that all public Encoder methods return
+// ErrNilEncoder (or zero values) when called on a nil *Encoder, without panicking.
+func TestNilEncoderReturnsError(t *testing.T) {
+	var e *Encoder
+
+	var dst [10]byte
+	var src [80]int16
+	if _, _, err := e.Encode(dst[:], src[:]); err != ErrNilEncoder {
+		t.Errorf("Encode on nil Encoder: want ErrNilEncoder, got %v", err)
+	}
+	if _, _, err := e.EncodeBatch(dst[:], src[:]); err != ErrNilEncoder {
+		t.Errorf("EncodeBatch on nil Encoder: want ErrNilEncoder, got %v", err)
+	}
+	ft := make([]FrameType, 1)
+	if _, _, err := e.EncodeBatchInto(dst[:], src[:], ft); err != ErrNilEncoder {
+		t.Errorf("EncodeBatchInto on nil Encoder: want ErrNilEncoder, got %v", err)
+	}
+	if got := e.Stats(); got != (EncoderStats{}) {
+		t.Errorf("Stats on nil Encoder: want zero, got %+v", got)
+	}
+	e.Reset() // must not panic
+}
+
+// TestNilDecoderReturnsError verifies that all public Decoder methods return
+// ErrNilDecoder (or zero values) when called on a nil *Decoder, without panicking.
+func TestNilDecoderReturnsError(t *testing.T) {
+	var d *Decoder
+
+	var out [80]int16
+	var frame [10]byte
+	if err := d.Decode(out[:], frame[:]); err != ErrNilDecoder {
+		t.Errorf("Decode on nil Decoder: want ErrNilDecoder, got %v", err)
+	}
+	if err := d.DecodeBatch(make([]int16, 80), [][]byte{frame[:]}); err != ErrNilDecoder {
+		t.Errorf("DecodeBatch on nil Decoder: want ErrNilDecoder, got %v", err)
+	}
+	if got := d.Stats(); got != (DecoderStats{}) {
+		t.Errorf("Stats on nil Decoder: want zero, got %+v", got)
+	}
+	d.Reset() // must not panic
+}
+
 // TestDecoder_RandomBitstreamWithInterleavedPLC verifies decoder robustness
 // under the most realistic packet-loss scenario: a stream of corrupt/random
 // 10-byte frames with PLC injected every 20 frames.

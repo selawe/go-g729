@@ -324,6 +324,8 @@ func BenchmarkEncodeBatchInto(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _, _ = enc.EncodeBatchInto(dst, src, frameTypes)
 	}
+	b.StopTimer()
+	reportFrameThroughput(b, 4)
 }
 
 func BenchmarkEncodeG729A(b *testing.B) {
@@ -341,6 +343,8 @@ func BenchmarkEncodeG729A(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _, _ = enc.Encode(dst[:], frame)
 	}
+	b.StopTimer()
+	reportFrameThroughput(b, 1)
 }
 
 func BenchmarkEncodeG729Full(b *testing.B) {
@@ -358,6 +362,8 @@ func BenchmarkEncodeG729Full(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _, _ = enc.Encode(dst[:], frame)
 	}
+	b.StopTimer()
+	reportFrameThroughput(b, 1)
 }
 
 // TestDiagnosticLPCFallback verifies that DiagnosticStats.LPCFallback is correctly
@@ -406,4 +412,6 @@ func BenchmarkEncodeG729A_WithVAD(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _, _ = enc.Encode(dst[:], frame)
 	}
+	b.StopTimer()
+	reportFrameThroughput(b, 1)
 }

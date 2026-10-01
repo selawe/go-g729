@@ -411,6 +411,8 @@ func BenchmarkDecodeSpeech(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = dec.Decode(dst[:], bitstream[:])
 	}
+	b.StopTimer()
+	reportFrameThroughput(b, 1)
 }
 
 func BenchmarkDecodeSID(b *testing.B) {
@@ -425,6 +427,8 @@ func BenchmarkDecodeSID(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = dec.Decode(dst[:], sidBytes[:])
 	}
+	b.StopTimer()
+	reportFrameThroughput(b, 1)
 }
 
 func BenchmarkDecodePLC(b *testing.B) {
@@ -437,4 +441,6 @@ func BenchmarkDecodePLC(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = dec.Decode(dst[:], nil)
 	}
+	b.StopTimer()
+	reportFrameThroughput(b, 1)
 }

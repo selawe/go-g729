@@ -16,7 +16,7 @@ import (
 	"github.com/selawe/go-g729/internal/vad"
 )
 
-type encoder struct {
+type Encoder struct {
 	cfg Config
 
 	frameCount int
@@ -79,8 +79,8 @@ type encoder struct {
 }
 
 // NewEncoder creates and initializes a G.729 speech encoder according to the given Config.
-func NewEncoder(cfg Config) Encoder {
-	e := &encoder{
+func NewEncoder(cfg Config) *Encoder {
+	e := &Encoder{
 		cfg: cfg,
 	}
 	e.Reset()
@@ -88,7 +88,10 @@ func NewEncoder(cfg Config) Encoder {
 }
 
 // Reset clears all encoder state, filter delay lines, and history buffers to their initial state.
-func (e *encoder) Reset() {
+func (e *Encoder) Reset() {
+	if e == nil {
+		return
+	}
 	e.frameCount = 0
 	e.stats = EncoderStats{}
 	e.hpfState.Reset()
@@ -146,7 +149,10 @@ func (e *encoder) Reset() {
 
 // Encode processes 80 samples (10 ms) of 16-bit linear PCM audio in src, and writes the encoded
 // bitstream into dst.
-func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, err error) {
+func (e *Encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, err error) {
+	if e == nil {
+		return 0, FrameUntransmitted, ErrNilEncoder
+	}
 	if !e.cfg.DisablePanicRecovery {
 		defer func() {
 			if r := recover(); r != nil {
@@ -601,13 +607,19 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 }
 
 // Stats returns cumulative operational telemetry for this encoder.
-func (e *encoder) Stats() EncoderStats {
+func (e *Encoder) Stats() EncoderStats {
+	if e == nil {
+		return EncoderStats{}
+	}
 	return e.stats
 }
 
 // EncodeBatch encodes multiple consecutive 10 ms speech frames (multiples of 80 int16 samples) into dst.
 // For zero-allocation batch encoding, use EncodeBatchInto.
-func (e *encoder) EncodeBatch(dst []byte, src []int16) (int, []FrameType, error) {
+func (e *Encoder) EncodeBatch(dst []byte, src []int16) (int, []FrameType, error) {
+	if e == nil {
+		return 0, nil, ErrNilEncoder
+	}
 	if len(src)%params.L_FRAME != 0 || len(src) == 0 {
 		return 0, nil, errors.New("g729: src length must be a non-zero multiple of 80 samples")
 	}
@@ -620,7 +632,10 @@ func (e *encoder) EncodeBatch(dst []byte, src []int16) (int, []FrameType, error)
 // EncodeBatchInto encodes multiple 10 ms frames without allocating a frameTypes slice.
 // Caller must provide frameTypes with length >= len(src)/80.
 // Returns total bytes written, number of frames actually encoded, and an error if any.
-func (e *encoder) EncodeBatchInto(dst []byte, src []int16, frameTypes []FrameType) (n int, numFrames int, err error) {
+func (e *Encoder) EncodeBatchInto(dst []byte, src []int16, frameTypes []FrameType) (n int, numFrames int, err error) {
+	if e == nil {
+		return 0, 0, ErrNilEncoder
+	}
 	if len(src)%params.L_FRAME != 0 || len(src) == 0 {
 		return 0, 0, errors.New("g729: src length must be a non-zero multiple of 80 samples")
 	}
@@ -649,7 +664,7 @@ func (e *encoder) EncodeBatchInto(dst []byte, src []int16, frameTypes []FrameTyp
 // invokeDiagnostic calls the optional OnDiagnostic callback, recovering from any panic.
 // Panics are not re-raised to keep the codec running, but are counted in
 // EncoderStats.DiagnosticPanics so callers can detect a buggy callback via Stats().
-func (e *encoder) invokeDiagnostic(stats DiagnosticStats) {
+func (e *Encoder) invokeDiagnostic(stats DiagnosticStats) {
 	if e.cfg.OnDiagnostic == nil {
 		return
 	}

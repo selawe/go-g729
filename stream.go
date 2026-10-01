@@ -51,7 +51,7 @@ var ErrIncompleteFrame = errors.New("g729: stream closed with incomplete trailin
 // Write behaves as if context.Background() were used.
 type Writer struct {
 	w             io.Writer
-	enc           Encoder
+	enc           *Encoder
 	ctx           atomic.Pointer[context.Context]
 	buf           [160]byte // 80 int16 samples = 160 bytes
 	bufLen        int
@@ -216,7 +216,7 @@ func (w *Writer) Close() error {
 // Read behaves as if context.Background() were used.
 type Reader struct {
 	r       io.Reader
-	dec     Decoder
+	dec     *Decoder
 	ctx     atomic.Pointer[context.Context]
 	buf     [160]byte
 	bufHead int

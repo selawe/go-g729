@@ -28,8 +28,8 @@ var plcMuteTable = [30]float32{
 	0.0646108, 0.0581497, 0.0523348, 0.0471013, 0.0423912,
 }
 
-// decoder implements the Decoder interface for ITU-T G.729 / G.729A speech synthesis.
-type decoder struct {
+// Decoder implements ITU-T G.729 / G.729A speech synthesis.
+type Decoder struct {
 	cfg DecoderConfig
 
 	// Excitation history buffer (154 past samples + 80 current frame samples = 234 floats).
@@ -88,20 +88,23 @@ type decoder struct {
 
 // NewDecoder creates and initializes a new G.729 / G.729A speech decoder with
 // default configuration (panic recovery enabled, no stack trace in errors).
-func NewDecoder() Decoder {
+func NewDecoder() *Decoder {
 	return NewDecoderWithConfig(DecoderConfig{})
 }
 
 // NewDecoderWithConfig creates and initializes a new G.729 / G.729A speech
 // decoder with the given DecoderConfig.
-func NewDecoderWithConfig(cfg DecoderConfig) Decoder {
-	d := &decoder{cfg: cfg}
+func NewDecoderWithConfig(cfg DecoderConfig) *Decoder {
+	d := &Decoder{cfg: cfg}
 	d.Reset()
 	return d
 }
 
 // Reset clears all internal state, delay lines, and history buffers to their initial reset state.
-func (d *decoder) Reset() {
+func (d *Decoder) Reset() {
+	if d == nil {
+		return
+	}
 	d.stats = DecoderStats{}
 	for i := range d.oldExc {
 		d.oldExc[i] = 0
@@ -142,7 +145,10 @@ func (d *decoder) Reset() {
 //   - 10 bytes: Normal active speech frame (80 bits)
 //   - 2 bytes:  Annex B SID frame (16 bits)
 //   - 0 bytes (or nil): Frame erasure / packet loss concealment (or untransmitted frame if in DTX)
-func (d *decoder) Decode(dst []int16, src []byte) (err error) {
+func (d *Decoder) Decode(dst []int16, src []byte) (err error) {
+	if d == nil {
+		return ErrNilDecoder
+	}
 	if !d.cfg.DisablePanicRecovery {
 		defer func() {
 			if r := recover(); r != nil {
@@ -503,14 +509,20 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 }
 
 // Stats returns cumulative operational and PLC telemetry for this decoder.
-func (d *decoder) Stats() DecoderStats {
+func (d *Decoder) Stats() DecoderStats {
+	if d == nil {
+		return DecoderStats{}
+	}
 	s := d.stats
 	s.LastBFICount = d.badFrames
 	return s
 }
 
 // DecodeBatch decompresses multiple G.729 bitstream frames sequentially into dst.
-func (d *decoder) DecodeBatch(dst []int16, frames [][]byte) error {
+func (d *Decoder) DecodeBatch(dst []int16, frames [][]byte) error {
+	if d == nil {
+		return ErrNilDecoder
+	}
 	if len(dst) < len(frames)*params.L_FRAME {
 		return ErrInvalidOutputLen
 	}
