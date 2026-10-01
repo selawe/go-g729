@@ -273,7 +273,8 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 		}
 	}
 
-	if b.bufferedCount == 0 {
+	if b.bufferedCount <= 0 {
+		b.bufferedCount = 0 // defensive clamp: guard against any undercount bug
 		b.buffering = true
 		b.stats.Underflows++
 		return 0, false, false

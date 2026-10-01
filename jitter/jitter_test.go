@@ -410,3 +410,28 @@ func TestCurrentBufferedIncremental(t *testing.T) {
 	}
 }
 
+// TestBufferedCountNonNegativeUnderPLC verifies that CurrentBuffered never
+// drops below zero even when Pop is called many more times than frames available.
+func TestBufferedCountNonNegativeUnderPLC(t *testing.T) {
+	jb := jitter.New(jitter.Config{
+		TargetDelay: 10 * time.Millisecond, // 1-frame prebuffer
+		MaxDelay:    50 * time.Millisecond,
+	})
+
+	// Push a single frame, then immediately exit prebuffering.
+	payload := make([]byte, 10)
+	if err := jb.Push(1, 80, payload); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	jb.Flush()
+
+	dst := make([]byte, 10)
+	// Pop far more frames than available — exercises PLC and underflow paths.
+	for i := 0; i < 50; i++ {
+		jb.PopInto(dst)
+		if got := jb.Stats().CurrentBuffered; got < 0 {
+			t.Fatalf("iteration %d: CurrentBuffered went negative: %d", i, got)
+		}
+	}
+}
+
