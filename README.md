@@ -185,12 +185,19 @@ if err != nil {
 // writer.SetFlushMode(g729.FlushZeroPad) // default: zero-pad ke 80 sampel
 // writer.SetFlushMode(g729.FlushDrop)    // drop sampel sisa tanpa frame akhir
 // writer.SetFlushMode(g729.FlushError)   // return ErrIncompleteFrame jika sisa
+
+// Cancellation per frame boundary (aman dipanggil dari goroutine lain):
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+writer.SetContext(ctx)
+
 _, err = io.Copy(writer, pcmReader)
 writer.Close()
 fmt.Printf("Sampel padded: %d\n", writer.PaddedSamples())
 
 // Streaming Decode (G.729 bitstream → PCM bytes)
 reader := g729.NewReader(bitstreamIn)
+reader.SetContext(ctx) // opsional: batalkan Read pada frame boundary berikutnya
 _, err = io.Copy(pcmOut, reader)
 ```
 
@@ -202,11 +209,15 @@ Untuk throughput pemrosesan audio dalam chunk multi-frame (misalnya 20 ms = 160 
 // Encode batch 20 ms (2 frame speech)
 pcm20ms := make([]int16, 160)
 dst20ms := make([]byte, 20)
-n, frameTypes, err := enc.EncodeBatch(dst20ms, pcm20ms)
+n, _, err := enc.EncodeBatch(dst20ms, pcm20ms)
 
-// Decode batch 20 ms
+// Decode batch: pisahkan []byte menjadi slice frame individual (tiap 10 byte)
 pcmOut := make([]int16, 160)
-err = dec.DecodeBatch(pcmOut, dst20ms[:n])
+frames := make([][]byte, n/10)
+for i := range frames {
+    frames[i] = dst20ms[i*10 : (i+1)*10]
+}
+err = dec.DecodeBatch(pcmOut, frames)
 ```
 
 ### Observabilitas Runtime (`Stats()`)
@@ -405,6 +416,16 @@ go func() { enc.Encode(...) }()
 ```
 
 Constructor `NewEncoder` dan `NewDecoder` ringan (< 1 µs, 0 alloc) sehingga tidak perlu pooling.
+
+---
+
+## Disclaimer
+
+> **Proyek ini dibuat dengan bantuan AI sebagai proyek pribadi.**
+>
+> Library ini dibangun melalui proses iteratif menggunakan berbagai alat bantu AI untuk implementasi dan review. Meskipun telah divalidasi terhadap test vector resmi ITU-T (SNR > 20 dB) dan mencakup fuzz testing serta race condition checks, **pengguna disarankan untuk melakukan evaluasi independen sebelum menggunakan di lingkungan produksi**, terutama untuk aplikasi yang membutuhkan keandalan tinggi seperti telekomunikasi, layanan darurat, atau sistem kritis lainnya.
+>
+> Gunakan dengan pertimbangan risiko yang sesuai.
 
 ---
 
