@@ -15,7 +15,7 @@ Implementasi **ITU-T G.729** speech codec dalam pure Go — mencakup **G.729 Ann
 - **Zero allocation pada hot path** — semua buffer pre-allocated di struct; `Encode()` dan `Decode()` tidak menyentuh heap.
 - **G.729A (default):** ACELP fast pair-wise heuristic search — **42 µs/frame, 238× real-time**.
 - **Full G.729:** 4-loop nested exhaustive search — **60 µs/frame, 168× real-time**.
-- **Decoder:** **9 µs/frame, 1054× real-time** — diverifikasi **SNR > 20 dB** terhadap `TEST.pst` resmi ITU-T.
+- **Decoder:** **9 µs/frame, 1054× real-time** — SNR 20.67 dB vs `TEST.pst` resmi ITU-T (vektor tidak disertakan di repo karena lisensi; lihat `testdata/itu/.gitignore` untuk cara memperolehnya).
 - **Annex B lengkap:** VAD (energi + zero-crossing + spectral tilt + noise tracking), DTX (SID frame 2-byte per RFC 3551), CNG (Gaussian pseudo-random excitation + pitch + ACELP).
 - **Packet Loss Concealment (PLC):** Ekstrapolasi pitch, pelemahan gain bertahap, muting setelah 6+ frame beruntun hilang.
 - **Multiple Encoder Profiles:** `ProfileCore`, `ProfileQuality`, `ProfileFast`, `ProfileClipRepair` (soft-knee declipping saturation protection), dan `ProfileDiagnostic` (per-frame DSP telemetry).
@@ -33,7 +33,7 @@ Implementasi **ITU-T G.729** speech codec dalam pure Go — mencakup **G.729 Ann
 
 ```
 go-g729/
-├── types.go            # Interface publik: Encoder, Decoder, Config, Profiles, sentinel errors
+├── types.go            # Tipe publik: *Encoder, *Decoder, Config, Profiles, sentinel errors
 ├── encoder.go          # Pipeline encoder G.729 / G.729A / Annex B
 ├── decoder.go          # Pipeline decoder, PLC, CNG
 ├── stream.go           # Streaming I/O adapters: Writer (io.WriteCloser) & Reader (io.Reader)
@@ -382,7 +382,11 @@ go run ./cmd/benchcheck \
 
 # Verifikasi ITU-T compliance (butuh test vectors di testdata/itu/)
 # Download dari: https://www.itu.int/net/itu-t/sigdb/genaudio/
-go test -run TestDecoderOfficialTestVector -v .
+# Letakkan TEST.IN, TEST.BIT, TEST.pst di testdata/itu/ lalu jalankan:
+go test -run "TestDecoderOfficialTestVector|TestEncoderConformance" -v .
+# TestDecoderOfficialTestVector : decoder SNR 20.67 dB vs TEST.pst  [gate ≥ 15 dB]
+# TestEncoderConformance        : pipeline SNR 12.24 dB vs TEST.pst [gate ≥  8 dB]
+#                                 round-trip SNR 5.69 dB vs TEST.IN  [gate ≥  3.5 dB]
 
 # Distribusi latensi dan P99 frame jitter test (10 000 frame)
 go test -run TestFrameTimeJitter -v .
@@ -423,7 +427,7 @@ Constructor `NewEncoder` dan `NewDecoder` ringan (< 1 µs, 0 alloc) sehingga tid
 
 > **Proyek ini dibuat dengan bantuan AI sebagai proyek pribadi.**
 >
-> Library ini dibangun melalui proses iteratif menggunakan berbagai alat bantu AI untuk implementasi dan review. Meskipun telah divalidasi terhadap test vector resmi ITU-T (SNR > 20 dB) dan mencakup fuzz testing serta race condition checks, **pengguna disarankan untuk melakukan evaluasi independen sebelum menggunakan di lingkungan produksi**, terutama untuk aplikasi yang membutuhkan keandalan tinggi seperti telekomunikasi, layanan darurat, atau sistem kritis lainnya.
+> Library ini dibangun melalui proses iteratif menggunakan berbagai alat bantu AI untuk implementasi dan review. Validasi kualitas dilakukan **secara lokal** terhadap test vector resmi ITU-T G.729 (decoder SNR 20.67 dB vs TEST.pst; pipeline SNR 12.24 dB vs TEST.pst) — vektor tidak disertakan di repo karena lisensi ITU-T, sehingga test ini dilewati (`SKIP`) pada instalasi segar. Lihat `testdata/itu/.gitignore` untuk petunjuk memperoleh vektor. Library juga mencakup fuzz testing dan race condition checks. **Pengguna disarankan untuk melakukan evaluasi independen sebelum menggunakan di lingkungan produksi**, terutama untuk aplikasi yang membutuhkan keandalan tinggi seperti telekomunikasi, layanan darurat, atau sistem kritis lainnya.
 >
 > Gunakan dengan pertimbangan risiko yang sesuai.
 
