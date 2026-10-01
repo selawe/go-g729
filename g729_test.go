@@ -402,3 +402,74 @@ func TestDecoderOfficialTestVector(t *testing.T) {
 	}
 }
 
+// TestEncoderConformance measures pipeline quality for the complete go-g729 path
+// (TEST.IN → go-g729 encoder → go-g729 decoder) and compares the result against
+// both the original TEST.IN and the ITU-T reference output TEST.pst.
+//
+// Two numbers are reported:
+//   - vs TEST.IN:  round-trip fidelity (how much quality the encoder+decoder loses)
+//   - vs TEST.pst: conformance gap (how close our pipeline is to the ITU reference pipeline)
+//
+// The conformance gap cannot be zero because our encoder is float32 and independently
+// implemented; different quantisation choices produce a different bitstream from TEST.BIT.
+// A gap of 8–12 dB vs TEST.pst is expected and acceptable for a float32 implementation.
+func TestEncoderConformance(t *testing.T) {
+	testPath := ituVectorPath("TEST.IN")
+	if testPath == "" {
+		t.Skip("TEST.IN not found in testdata/itu/ or docs/ — place ITU-T test vectors in testdata/itu/")
+	}
+	pstPath := ituVectorPath("TEST.pst")
+	if pstPath == "" {
+		t.Skip("TEST.pst not found")
+	}
+
+	pcm, err := readPCMFile(testPath)
+	if err != nil {
+		t.Skipf("cannot read TEST.IN: %v", err)
+	}
+	refPcm, err := readPCMFile(pstPath)
+	if err != nil {
+		t.Skipf("cannot read TEST.pst: %v", err)
+	}
+
+	totalFrames := len(pcm) / 80
+	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
+	dec := NewDecoder()
+
+	decoded := make([]int16, totalFrames*80)
+	var bitstream [10]byte
+
+	for f := 0; f < totalFrames; f++ {
+		n, _, err := enc.Encode(bitstream[:], pcm[f*80:(f+1)*80])
+		if err != nil || n != 10 {
+			t.Fatalf("frame %d encode failed: n=%d err=%v", f, n, err)
+		}
+		if err := dec.Decode(decoded[f*80:(f+1)*80], bitstream[:]); err != nil {
+			t.Fatalf("frame %d decode failed: %v", f, err)
+		}
+	}
+
+	// Round-trip quality: our pipeline vs original input.
+	snrInput, segInput := computeSNR(pcm, decoded)
+	t.Logf("Round-trip  (our pipeline vs TEST.IN):  overall=%.2f dB  segmental=%.2f dB", snrInput, segInput)
+
+	// Conformance gap: our pipeline vs ITU reference output.
+	snrRef, segRef := computeSNR(refPcm, decoded)
+	t.Logf("Conformance (our pipeline vs TEST.pst): overall=%.2f dB  segmental=%.2f dB", snrRef, segRef)
+
+	// Round-trip SNR gate: catches genuine encoder regressions.
+	const minRoundTripSNR = 3.5
+	if snrInput < minRoundTripSNR {
+		t.Errorf("round-trip SNR too low: %.2f dB (min %.1f dB)", snrInput, minRoundTripSNR)
+	}
+
+	// Conformance gate: our decoded output must be perceptually close to the ITU
+	// reference output.  Expected value is ~12 dB (our encoder makes similar
+	// quantisation choices to the reference).  A lower bound of 8 dB provides a
+	// 4 dB regression margin while still catching a badly broken encoder.
+	const minConformanceSNR = 8.0
+	if snrRef < minConformanceSNR {
+		t.Errorf("conformance SNR vs TEST.pst too low: %.2f dB (min %.1f dB)", snrRef, minConformanceSNR)
+	}
+}
+
