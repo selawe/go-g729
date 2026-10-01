@@ -15,6 +15,19 @@ import (
 	"github.com/selawe/go-g729/internal/vad"
 )
 
+// plcMuteTable holds 0.9^n for n = 1..30, used for progressive PLC muting.
+// Indexed as plcMuteTable[badFrames-7] (first muting step is at badFrames == 7).
+// Entries beyond index 29 use the last value (~4.2% amplitude), which is
+// already inaudible and avoids a math.Pow call on every PLC subframe.
+var plcMuteTable = [30]float32{
+	0.9000000, 0.8100000, 0.7290000, 0.6561000, 0.5904900,
+	0.5314410, 0.4782969, 0.4304672, 0.3874205, 0.3486784,
+	0.3138106, 0.2824295, 0.2541866, 0.2287679, 0.2058911,
+	0.1853020, 0.1667718, 0.1500946, 0.1350851, 0.1215766,
+	0.1094190, 0.0984771, 0.0886294, 0.0797664, 0.0717898,
+	0.0646108, 0.0581497, 0.0523348, 0.0471013, 0.0423912,
+}
+
 // decoder implements the Decoder interface for ITU-T G.729 / G.729A speech synthesis.
 type decoder struct {
 	cfg DecoderConfig
@@ -417,9 +430,14 @@ func (d *decoder) Decode(dst []int16, src []byte) (err error) {
 				// Gain attenuation (0.9 for pitch gain, 0.98 for codebook gain)
 				gainPit, gainCode := codebook.DequantizeGain(0, 0, codeVec[:], &d.pastQuaEn, 1, &d.gainPit, &d.gainCode)
 
-				// Progressive muting if consecutive frame loss exceeds 6 frames (60 ms)
+				// Progressive muting if consecutive frame loss exceeds 6 frames (60 ms).
+				// Use a precomputed 0.9^n table to avoid math.Pow on the hot PLC path.
 				if d.badFrames > 6 {
-					muteFac := float32(math.Pow(0.9, float64(d.badFrames-6)))
+					idx := d.badFrames - 7
+					if idx >= len(plcMuteTable) {
+						idx = len(plcMuteTable) - 1
+					}
+					muteFac := plcMuteTable[idx]
 					gainPit *= muteFac
 					gainCode *= muteFac
 				}
