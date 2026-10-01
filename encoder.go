@@ -643,12 +643,16 @@ func (e *encoder) EncodeBatchInto(dst []byte, src []int16, frameTypes []FrameTyp
 }
 
 // invokeDiagnostic calls the optional OnDiagnostic callback, recovering from any panic.
+// Panics are not re-raised to keep the codec running, but are counted in
+// EncoderStats.DiagnosticPanics so callers can detect a buggy callback via Stats().
 func (e *encoder) invokeDiagnostic(stats DiagnosticStats) {
 	if e.cfg.OnDiagnostic == nil {
 		return
 	}
 	defer func() {
-		_ = recover()
+		if recover() != nil {
+			e.stats.DiagnosticPanics++
+		}
 	}()
 	e.cfg.OnDiagnostic(stats)
 }

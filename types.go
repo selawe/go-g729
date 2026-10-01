@@ -165,12 +165,13 @@ func buildPanicError(recovered any, stack []byte, includeStack bool) error {
 
 // EncoderStats contains cumulative runtime metrics for an Encoder instance.
 type EncoderStats struct {
-	TotalFrames    int   // Total frames processed
-	SpeechFrames   int   // Active speech frames encoded (10 bytes)
-	SIDFrames      int   // Comfort noise SID frames emitted (2 bytes)
-	Untransmitted  int   // DTX suppressed frames (0 bytes)
-	BytesEmitted   int64 // Total bitstream bytes written (speech + SID)
-	ClippedSamples int64 // Cumulative number of soft-clipped/saturated input samples
+	TotalFrames      int   // Total frames processed
+	SpeechFrames     int   // Active speech frames encoded (10 bytes)
+	SIDFrames        int   // Comfort noise SID frames emitted (2 bytes)
+	Untransmitted    int   // DTX suppressed frames (0 bytes)
+	BytesEmitted     int64 // Total bitstream bytes written (speech + SID)
+	ClippedSamples   int64 // Cumulative number of soft-clipped/saturated input samples
+	DiagnosticPanics int   // Panics recovered from OnDiagnostic callback; non-zero indicates a buggy callback
 }
 
 // DecoderStats contains cumulative runtime metrics for a Decoder instance.
