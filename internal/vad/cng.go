@@ -109,6 +109,12 @@ func CalcExcRand(
 			excg[i] = g
 			ener += g * g
 		}
+		// Guard: ener == 0 is astronomically unlikely (all 40 CLT outputs = 0)
+		// but would produce +Inf via 1/sqrt(0), propagating NaN to the synthesis
+		// filter and saturating the output.  Use identity normalization instead.
+		if ener == 0 {
+			ener = 1.0
+		}
 
 		fact := params.NORM_GAUSS * curGain / float32(math.Sqrt(float64(ener)))
 		for i := 0; i < params.L_SUBFR; i++ {
