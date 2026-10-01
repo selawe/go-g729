@@ -254,15 +254,17 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 			if sid.Transmitted {
 				ft = FrameSID
 			}
-			e.invokeDiagnostic(DiagnosticStats{
-				FrameIndex:   e.frameCount,
-				FrameType:    ft,
-				EnergyDB:     energyDB,
-				ZeroCrossing: zeroCrossingRate(speech),
-				VADMarker:    marker,
-				ClippedCount: clippedCount,
-				LPCFallback:  levFallback,
-			})
+			if e.cfg.OnDiagnostic != nil {
+				e.invokeDiagnostic(DiagnosticStats{
+					FrameIndex:   e.frameCount,
+					FrameType:    ft,
+					EnergyDB:     energyDB,
+					ZeroCrossing: zeroCrossingRate(speech),
+					VADMarker:    marker,
+					ClippedCount: clippedCount,
+					LPCFallback:  levFallback,
+				})
+			}
 
 			e.stats.TotalFrames++
 			e.stats.ClippedSamples += int64(clippedCount)
@@ -575,18 +577,20 @@ func (e *encoder) Encode(dst []byte, src []int16) (n int, frameType FrameType, e
 	// 12. Serialize 80 bits into dst
 	bits.Pack(dst[:params.BYTES_PER_FRAME], &e.paramSet)
 
-	e.invokeDiagnostic(DiagnosticStats{
-		FrameIndex:   e.frameCount,
-		FrameType:    FrameSpeech,
-		EnergyDB:     energyDB,
-		ZeroCrossing: zeroCrossingRate(speech),
-		VADMarker:    marker,
-		PitchLag:     tOp,
-		GainPitch:    subfrGainPit,
-		GainCode:     subfrGainCode,
-		ClippedCount: clippedCount,
-		LPCFallback:  levFallback,
-	})
+	if e.cfg.OnDiagnostic != nil {
+		e.invokeDiagnostic(DiagnosticStats{
+			FrameIndex:   e.frameCount,
+			FrameType:    FrameSpeech,
+			EnergyDB:     energyDB,
+			ZeroCrossing: zeroCrossingRate(speech),
+			VADMarker:    marker,
+			PitchLag:     tOp,
+			GainPitch:    subfrGainPit,
+			GainCode:     subfrGainCode,
+			ClippedCount: clippedCount,
+			LPCFallback:  levFallback,
+		})
+	}
 
 	e.stats.TotalFrames++
 	e.stats.SpeechFrames++
