@@ -2,6 +2,7 @@ package g729
 
 import (
 	"bytes"
+	"math/rand"
 	"testing"
 )
 
@@ -69,5 +70,30 @@ func TestDecoder_RepeatedPathologicalBitstreams(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDecoder_RandomBitstreamWithInterleavedPLC verifies decoder robustness
+// under the most realistic packet-loss scenario: a stream of corrupt/random
+// 10-byte frames with PLC injected every 20 frames.
+//
+// This exercises the interaction between corrupted adaptive-excitation state
+// and PLC recovery, which single-frame fuzz tests do not cover.
+func TestDecoder_RandomBitstreamWithInterleavedPLC(t *testing.T) {
+	dec := NewDecoder()
+	rng := rand.New(rand.NewSource(1337))
+	var bits [10]byte
+	var out [80]int16
+
+	for i := 0; i < 5000; i++ {
+		rng.Read(bits[:])
+		if err := dec.Decode(out[:], bits[:]); err != nil {
+			t.Fatalf("frame %d random: %v", i, err)
+		}
+		if i%20 == 0 {
+			if err := dec.Decode(out[:], nil); err != nil {
+				t.Fatalf("frame %d PLC: %v", i, err)
+			}
+		}
 	}
 }
