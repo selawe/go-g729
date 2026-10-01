@@ -64,7 +64,11 @@ const (
 
 // Sentinel errors.
 var (
-	// ErrUnknownParam is returned for unrecognised fmtp parameters.
+	// Deprecated: ErrUnknownParam was intended to be returned for unrecognised
+	// fmtp parameters, but ParseFMTPParams silently ignores unknown keys for
+	// forward-compatibility with future G.729 extensions per RFC 3551.
+	// This sentinel is never returned by any function and will be removed in the
+	// next major version.
 	ErrUnknownParam = errors.New("sdp: unknown G.729 fmtp parameter")
 
 	// ErrInvalidValue is returned when an fmtp parameter has an invalid value.

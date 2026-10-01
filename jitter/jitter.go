@@ -34,8 +34,11 @@ var (
 	// ErrBufferFull is returned when incoming packets exceed the ring buffer window.
 	ErrBufferFull = errors.New("jitter: buffer capacity exceeded")
 
-	// ErrDstTooSmall is returned by PopInto when dst has insufficient capacity
-	// to hold a full G.729 speech frame (10 bytes).
+	// Deprecated: ErrDstTooSmall was intended to be returned by PopInto for
+	// insufficient dst, but PopInto's signature has no error return.  PopInto
+	// returns (0, false, false) when len(dst) < rtp.FrameBytes instead.
+	// This sentinel is never returned by any function and will be removed in the
+	// next major version.
 	ErrDstTooSmall = errors.New("jitter: destination buffer must be at least 10 bytes")
 )
 
@@ -241,7 +244,8 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 //   - isLoss: true if this slot represents packet loss (trigger PLC in Decoder),
 //   - ok: true if playout slot was ready, false if buffer is buffering or starved (underflow).
 //
-// If dst is too small, PopInto returns (0, false, false) without advancing playout state.
+// If len(dst) < rtp.FrameBytes, PopInto returns (0, false, false) without advancing playout state.
+// No error is returned in this case; callers must ensure dst is large enough before calling.
 func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 	if len(dst) < rtp.FrameBytes {
 		return 0, false, false
