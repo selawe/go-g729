@@ -36,6 +36,27 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Decoder: postfilter residue filter kehilangan history tiap subframe.**
+  Filter A(z/γ₂_pst) (tahap pertama adaptive postfilter) dipanggil dengan
+  `nil` memory setiap subframe, sehingga M=10 sampel history di-reset. Referensi
+  ITU-T Annex C mempertahankan history ini via pointer arithmetic `syn[-M..-1]`;
+  implementasi Go harus membawanya secara eksplisit di `PostFilterState.memRes`.
+  Dampak: SNR decoder vs TEST.pst meningkat dari **20.67 dB → 32.81 dB (+12.14 dB)**.
+  Gate `TestDecoderOfficialTestVector` dinaikkan dari 15 dB ke 28 dB.
+- **Decoder: urutan ekstrapolasi pitch lag salah saat PLC dan parity error.**
+  Sesuai ITU-T G.729 §4.4.1 / DEC_LD8A.C, nilai T0 harus dibaca *sebelum*
+  `old_T0` di-increment (`T0 = old_T0; old_T0++`). Kode sebelumnya
+  mengincrement terlebih dahulu, sehingga subframe 0 saat PLC/parity error
+  menggunakan lag yang sudah digeser satu — tidak sesuai referensi.
+- **RTP: paket transisi speech→SID (RFC 3551 §4.5.6) tidak di-unpack dengan
+  benar.** Paket campuran speech+SID (misal 1 frame 10 byte + 1 frame 2 byte)
+  gagal diurai karena `UnpackInto` menolak frame SID setelah frame speech.
+  Sekarang transisi speech→SID diizinkan sesuai spesifikasi.
+- **Jitter buffer: multi-frame packet collision.**
+  Slot di-index hanya dengan `seq & slotMask`, tidak menyimpan semua N frame
+  per paket. Paket dengan seq yang memetakan ke slot yang sama menimpa frame
+  yang belum diputar. Sekarang setiap slot menyimpan hingga `MaxFramesPerPacket`
+  frame lengkap; `playoutFrameIdx` melacak frame mana yang akan dibaca berikutnya.
 - `computeSNR`: sebelumnya melewati delay dengan noise = 0, sehingga pada
   output bit-exact helper salah memilih delay lain dan melaporkan ~6 dB
   (artefak). Sekarang noise = 0 langsung mengembalikan `+Inf` (perfect match).
