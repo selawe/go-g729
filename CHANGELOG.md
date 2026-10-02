@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [v0.2.1] — 2026-10-03
 
+### Added
+
+- **CI/CD Pipeline (`.github/workflows/ci.yml`)**: Multi-OS test matrix (Ubuntu, macOS, Windows), race detector check (`go test -race`), static analysis (`go vet`), security vulnerability scan (`govulncheck`), and automated smoke fuzzing.
+- **`g729.EncoderPool` & `g729.DecoderPool`**: Concurrent-safe zero-allocation object pools based on `sync.Pool` with automatic state `.Reset()`, designed for high-turnover VoIP sessions (245 ns Get/Put, 0 B/op, 0 allocs).
+- **RFC 3550 RTCP Telemetry & E-Model MOS Estimator (`rtp.RTCPTracker`)**: Real-time statistical tracking of interarrival jitter $J$, cumulative packet loss, interval fraction lost, and estimated conversational speech quality (MOS-CQO / R-factor per ITU-T G.107).
+- **RFC 4733 DTMF Telephony Guidance & SDP Helpers (`sdp.TelephoneEvent*`)**: Complete architectural guide (`docs/telephony_dtmf.md`) explaining why CELP codecs cannot encode in-band DTMF and detailing SDP negotiation + RTP demultiplexing patterns for out-of-band `telephone-event`.
+- **Pion WebRTC / RTP Integration Guide (`docs/pion_integration.md`)**: End-to-end integration guide and tested examples for building scalable WebRTC media gateways using Pion and `go-g729`.
+
 ### Fixed
 
 - **Decoder: postfilter residue filter kehilangan history tiap subframe.**
