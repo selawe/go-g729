@@ -173,9 +173,10 @@ func Residue(out, x, a, mem []float32, update bool) {
 
 // Convolution computes causal linear convolution of input vector x and impulse response h:
 //
-//	out[n] = sum_{i=0}^n x[i]*h[n-i]
+//	out[n] = sum_{i=iMin}^{iMax} x[i]*h[n-i]
 //
-// for n = 0 ... len(out)-1.
+// for n = 0 ... len(out)-1, where iMin and iMax are computed per-sample to stay
+// within the bounds of both x and h, eliminating inner-loop branch checks.
 func Convolution(out, h, x []float32) {
 	l := len(out)
 	lx := len(x)
@@ -183,15 +184,18 @@ func Convolution(out, h, x []float32) {
 
 	for n := 0; n < l; n++ {
 		var s float32
-		maxI := n
-		if maxI >= lx {
-			maxI = lx - 1
+		iMax := n
+		if iMax >= lx {
+			iMax = lx - 1
 		}
-		for i := 0; i <= maxI; i++ {
-			hIdx := n - i
-			if hIdx < lh {
-				s += x[i] * h[hIdx]
-			}
+		// h[n-i] is valid when n-i < lh, i.e., i > n-lh, i.e., iMin = max(0, n+1-lh).
+		iMin := n + 1 - lh
+		if iMin < 0 {
+			iMin = 0
+		}
+		_ = x[iMax]
+		for i := iMin; i <= iMax; i++ {
+			s += x[i] * h[n-i]
 		}
 		out[n] = s
 	}

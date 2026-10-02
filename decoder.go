@@ -1,7 +1,6 @@
 package g729
 
 import (
-	"math"
 	"runtime/debug"
 
 	"github.com/selawe/go-g729/internal/bits"
@@ -489,7 +488,7 @@ func (d *Decoder) Decode(dst []int16, src []byte) (err error) {
 		// NaN comparisons always return false, so without an explicit guard NaN
 		// falls through to int16(NaN±0.5) which is implementation-defined in Go.
 		// Treat NaN as silence (0) to avoid platform-specific output corruption.
-		if math.IsNaN(float64(val)) {
+		if val != val { // IEEE-754: NaN is the only value where x != x
 			dst[i] = 0
 		} else if val > 32767.0 {
 			dst[i] = 32767

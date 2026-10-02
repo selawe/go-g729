@@ -129,9 +129,6 @@ func PostFilterB(syn []float32, az []float32, pitchLags [2]int, vad int, state *
 		for i := params.M + 1; i < LH; i++ {
 			h[i] = 0
 		}
-		for i := range zeroMem {
-			zeroMem[i] = 0
-		}
 		dsp.SynthesisFilter(h[:], h[:], ap4[:], zeroMem[:], false)
 
 		var temp1, temp2 float32
