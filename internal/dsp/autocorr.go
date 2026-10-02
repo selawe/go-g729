@@ -38,15 +38,36 @@ func AutocorrRaw(r, speech, window []float32, m int) {
 	}
 
 	var y [params.L_WINDOW]float32
+	_ = speech[params.L_WINDOW-1]
+	_ = win[params.L_WINDOW-1]
 	for i := 0; i < params.L_WINDOW; i++ {
 		y[i] = speech[i] * win[i]
 	}
 
+	_ = r[m]
 	for k := 0; k <= m; k++ {
 		var sum float32
 		end := params.L_WINDOW - k
-		for j := 0; j < end; j++ {
-			sum += y[j] * y[j+k]
+		yj := y[:end]
+		yjk := y[k : k+end]
+		_ = yjk[end-1]
+		j := 0
+		for ; j <= end-8; j += 8 {
+			s0 := yj[j : j+8]
+			s1 := yjk[j : j+8]
+			_ = s0[7]
+			_ = s1[7]
+			sum += s0[0] * s1[0]
+			sum += s0[1] * s1[1]
+			sum += s0[2] * s1[2]
+			sum += s0[3] * s1[3]
+			sum += s0[4] * s1[4]
+			sum += s0[5] * s1[5]
+			sum += s0[6] * s1[6]
+			sum += s0[7] * s1[7]
+		}
+		for ; j < end; j++ {
+			sum += yj[j] * yjk[j]
 		}
 		r[k] = sum
 	}
