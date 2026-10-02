@@ -217,15 +217,14 @@ func (d *Decoder) Decode(dst []int16, src []byte) (err error) {
 			var t0, t0Frac int
 			if subfrIdx == 0 {
 				if parityErr != 0 {
-					// ITU-T G.729 dec_lag3() for bfi=1: increment before use.
-					// The spec sets T0 = old_T0+1 and uses the incremented value
-					// for subframe 0, matching the reference C decoder behaviour.
+					// ITU-T G.729 §4.4.1 / DEC_LD8A.C:
+					// T0 = old_T0; old_T0++; if (old_T0 > PIT_MAX) old_T0 = PIT_MAX
+					t0 = d.oldT0
+					t0Frac = 0
 					d.oldT0++
 					if d.oldT0 > params.PIT_MAX {
 						d.oldT0 = params.PIT_MAX
 					}
-					t0 = d.oldT0
-					t0Frac = 0
 				} else {
 					t0, t0Frac = pitch.DecodePitch(int(paramSet.P1), 0, &t0Min, &t0Max)
 					d.oldT0 = t0
@@ -409,16 +408,16 @@ func (d *Decoder) Decode(dst []int16, src []byte) (err error) {
 				}
 
 				// Extrapolate pitch delay with gradual drift.
-				// ITU-T G.729 dec_lag3() for bfi=1: T0 = old_T0+1 (increment
-				// before use), so subframe 0 uses the incremented lag, not the
-				// stale previous-frame lag.  This matches the reference C decoder.
+				// ITU-T G.729 §4.4.1 / DEC_LD8A.C:
+				// T0 = old_T0; old_T0++; if (old_T0 > PIT_MAX) old_T0 = PIT_MAX
+				t0 := d.oldT0
+				t0Frac := 0
+				pitchLags[subfrIdx] = t0
+
 				d.oldT0++
 				if d.oldT0 > params.PIT_MAX {
 					d.oldT0 = params.PIT_MAX
 				}
-				t0 := d.oldT0
-				t0Frac := 0
-				pitchLags[subfrIdx] = t0
 
 				// Adaptive excitation
 				pitch.InterpExcitation(d.oldExc[:], subfrExcOffset, t0, t0Frac, params.L_SUBFR)

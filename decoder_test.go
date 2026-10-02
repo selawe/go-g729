@@ -444,3 +444,29 @@ func BenchmarkDecodePLC(b *testing.B) {
 	b.StopTimer()
 	reportFrameThroughput(b, 1)
 }
+
+func TestDecoderPLCLagExtrapolation(t *testing.T) {
+	dec := NewDecoder()
+	if dec.oldT0 != 60 {
+		t.Fatalf("expected initial oldT0=60, got %d", dec.oldT0)
+	}
+
+	var dst [80]int16
+	// 1st lost frame (ITU-T G.729 §4.4.1):
+	// Subframe 0: uses T0 = 60, then oldT0 becomes 61
+	// Subframe 1: uses T0 = 61, then oldT0 becomes 62
+	if err := dec.Decode(dst[:], nil); err != nil {
+		t.Fatalf("decode nil failed: %v", err)
+	}
+	if dec.oldT0 != 62 {
+		t.Errorf("after 1 lost frame (2 subframes): expected oldT0=62, got %d", dec.oldT0)
+	}
+
+	// After many consecutive lost frames, oldT0 must clamp at PIT_MAX (143)
+	for i := 0; i < 100; i++ {
+		_ = dec.Decode(dst[:], nil)
+	}
+	if dec.oldT0 != 143 {
+		t.Errorf("expected oldT0 clamped to PIT_MAX (143), got %d", dec.oldT0)
+	}
+}
