@@ -27,6 +27,10 @@ const (
 	// MaxSlotCount is the size of the ring buffer (must be power of 2 for fast modular arithmetic).
 	MaxSlotCount = 128
 	slotMask     = MaxSlotCount - 1
+
+	// MaxFramesPerPacket is the maximum number of G.729 frames bundled per RTP packet.
+	// 16 frames = 160 ms (supports standard 10, 20, 30, 40 ms up to 80 and 160 ms).
+	MaxFramesPerPacket = 16
 )
 
 // Sentinel errors.
@@ -66,12 +70,13 @@ type Stats struct {
 	CurrentBuffered int // Current number of frames queued
 }
 
-type frameSlot struct {
+type packetSlot struct {
 	seq       uint16
 	timestamp uint32
 	valid     bool
-	data      [rtp.FrameBytes]byte
-	dataLen   int
+	nFrames   int
+	frames    [MaxFramesPerPacket][rtp.FrameBytes]byte
+	frameLens [MaxFramesPerPacket]int
 }
 
 // Buffer implements a concurrent-safe adaptive jitter buffer for G.729 RTP audio.
@@ -86,26 +91,24 @@ type Buffer struct {
 	buffering   bool
 	playoutSeq  uint16
 
-	slots [MaxSlotCount]frameSlot
+	playoutFrameIdx     int
+	lastPacketFrames    int
+	lossFramesRemaining int
+
+	slots [MaxSlotCount]packetSlot
 	stats Stats
 
-	// bufferedCount tracks the number of valid slots whose sequence numbers
-	// lie in the current playout window [playoutSeq, playoutSeq+MaxSlotCount).
-	// Maintained incrementally in Push/Pop to avoid the O(MaxSlotCount) scan
-	// that the earlier implementation performed on every Pop.
+	// bufferedCount tracks the total number of frames currently queued in the buffer.
 	bufferedCount int
 
-	// unpackBuf sized for the largest realistic RTP payload: 8 frames = 80 ms.
-	// Common packetization intervals are 10, 20, 30, 40 ms (1-4 frames), but
-	// some legacy PBX gateways bundle up to 80 ms.
-	unpackBuf [8][10]byte
-	dstSlices [8][]byte
+	unpackBuf [MaxFramesPerPacket][rtp.FrameBytes]byte
+	dstSlices [MaxFramesPerPacket][]byte
 }
 
 // slotIsCurrent reports whether a slot's stored sequence number lies within
 // the current playout window [playoutSeq, playoutSeq+MaxSlotCount). Uses
 // signed 16-bit subtraction so it handles seq-number wraparound correctly.
-func (b *Buffer) slotIsCurrent(slot *frameSlot) bool {
+func (b *Buffer) slotIsCurrent(slot *packetSlot) bool {
 	if !slot.valid {
 		return false
 	}
@@ -137,10 +140,11 @@ func New(cfg Config) *Buffer {
 	}
 
 	b := &Buffer{
-		targetDelay: target,
-		maxDelay:    max,
-		maxSlots:    maxSlots,
-		buffering:   true,
+		targetDelay:      target,
+		maxDelay:         max,
+		maxSlots:         maxSlots,
+		buffering:        true,
+		lastPacketFrames: 1,
 	}
 	for i := range b.unpackBuf {
 		b.dstSlices[i] = b.unpackBuf[i][:]
@@ -156,6 +160,9 @@ func (b *Buffer) Reset() {
 	b.initialized = false
 	b.buffering = true
 	b.playoutSeq = 0
+	b.playoutFrameIdx = 0
+	b.lastPacketFrames = 1
+	b.lossFramesRemaining = 0
 	b.stats = Stats{}
 	b.bufferedCount = 0
 	for i := range b.slots {
@@ -164,7 +171,8 @@ func (b *Buffer) Reset() {
 }
 
 // Push inserts an RTP packet containing G.729 payload into the jitter buffer.
-// The payload is unpacked into individual 10 ms frames and slotted by sequence number.
+// The packet is slotted by its 16-bit RTP sequence number (RFC 3550 §5.1),
+// and unpacked into individual 10 ms frames for sequential playout.
 func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -175,15 +183,21 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 	if err != nil {
 		return err
 	}
+	if nFrames > MaxFramesPerPacket {
+		nFrames = MaxFramesPerPacket
+	}
 
 	if !b.initialized {
 		b.initialized = true
 		b.playoutSeq = seq
+		b.playoutFrameIdx = 0
 		b.buffering = true
+		b.lastPacketFrames = nFrames
 	} else if b.buffering {
 		diff := int16(seq - b.playoutSeq)
 		if diff < 0 && int16(b.playoutSeq-seq) < MaxSlotCount {
 			b.playoutSeq = seq
+			b.playoutFrameIdx = 0
 		}
 	} else {
 		// Check for late packet: if seq is older than current playoutSeq
@@ -192,44 +206,44 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 			b.stats.LatePackets++
 			return nil
 		}
-		// Enforce MaxDelay: reject packets more than maxSlots frames ahead of
-		// playout (they would push effective playout latency past MaxDelay).
+		// Enforce MaxDelay: reject packets more than maxSlots ahead of playout
 		if int(diff) >= b.maxSlots {
 			b.stats.LatePackets++
 			return nil
 		}
 	}
 
-	// Slot each frame contained in this packet
-	for i := 0; i < nFrames; i++ {
-		slotSeq := seq + uint16(i)
-		slotIdx := int(slotSeq & slotMask)
-		slot := &b.slots[slotIdx]
+	slotIdx := int(seq & slotMask)
+	slot := &b.slots[slotIdx]
 
-		if slot.valid {
-			if slot.seq == slotSeq {
-				b.stats.DupPackets++
-				continue
-			}
-			// Overwriting a different-seq entry: adjust bufferedCount by
-			// dropping the old contribution before adding the new one below.
-			if b.slotIsCurrent(slot) {
-				b.bufferedCount--
-			}
-			b.stats.DroppedByWrap++
+	if slot.valid {
+		if slot.seq == seq {
+			b.stats.DupPackets++
+			return nil
 		}
-
-		slot.seq = slotSeq
-		slot.timestamp = timestamp + uint32(i*rtp.TimestampIncrement)
-		slot.valid = true
-		if b.dstSlices[i] != nil {
-			slot.dataLen = len(b.dstSlices[i])
-			copy(slot.data[:slot.dataLen], b.dstSlices[i])
-		} else {
-			slot.dataLen = 0
+		// Overwriting a different-seq entry: adjust bufferedCount
+		if b.slotIsCurrent(slot) {
+			b.bufferedCount -= slot.nFrames
+			if b.bufferedCount < 0 {
+				b.bufferedCount = 0
+			}
 		}
-		b.bufferedCount++
+		b.stats.DroppedByWrap++
 	}
+
+	slot.seq = seq
+	slot.timestamp = timestamp
+	slot.valid = true
+	slot.nFrames = nFrames
+	for i := 0; i < nFrames; i++ {
+		flen := len(b.dstSlices[i])
+		slot.frameLens[i] = flen
+		if flen > 0 {
+			copy(slot.frames[i][:flen], b.dstSlices[i])
+		}
+	}
+	b.bufferedCount += nFrames
+	b.stats.CurrentBuffered = b.bufferedCount
 
 	return nil
 }
@@ -273,41 +287,72 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 		}
 	}
 
-	if b.bufferedCount <= 0 {
+	if b.bufferedCount <= 0 && b.lossFramesRemaining <= 0 {
 		b.bufferedCount = 0 // defensive clamp: guard against any undercount bug
 		b.buffering = true
 		b.stats.Underflows++
 		return 0, false, false
 	}
 
+	// Conceal remaining frames of a multi-frame lost packet
+	if b.lossFramesRemaining > 0 {
+		b.lossFramesRemaining--
+		b.stats.EmittedPLC++
+		b.stats.CurrentBuffered = b.bufferedCount
+		return 0, true, true
+	}
+
 	slotIdx := int(b.playoutSeq & slotMask)
 	slot := &b.slots[slotIdx]
 
 	if slot.valid && slot.seq == b.playoutSeq {
-		slot.valid = false
-		b.bufferedCount--
-		b.playoutSeq++
-		b.stats.PoppedFrames++
-		b.stats.CurrentBuffered = b.bufferedCount
-		if slot.dataLen > 0 {
-			n = copy(dst, slot.data[:slot.dataLen])
+		if b.playoutFrameIdx < slot.nFrames {
+			flen := slot.frameLens[b.playoutFrameIdx]
+			if flen > 0 {
+				n = copy(dst, slot.frames[b.playoutFrameIdx][:flen])
+			} else {
+				n = 0
+			}
+			b.playoutFrameIdx++
+			b.bufferedCount--
+			b.stats.PoppedFrames++
+			b.stats.CurrentBuffered = b.bufferedCount
+
+			if b.playoutFrameIdx >= slot.nFrames {
+				// Packet completed
+				b.lastPacketFrames = slot.nFrames
+				slot.valid = false
+				b.playoutSeq++
+				b.playoutFrameIdx = 0
+			}
 			return n, false, true
 		}
-		// DTX suppressed frame
-		return 0, false, true
 	}
 
-	// Gap detected: packet loss! Advance playoutSeq and signal PLC. If the
-	// slot at the new playoutSeq+MaxSlotCount-1 boundary held a stale entry
-	// (valid from a previous cycle that never got popped), it may still be
-	// counted; drop it now to keep bufferedCount honest under long gap runs.
+	// Gap detected: packet loss! Advance playoutSeq and signal PLC.
+	lossFrames := b.lastPacketFrames
+	if lossFrames < 1 {
+		lossFrames = 1
+	}
+	if lossFrames > MaxFramesPerPacket {
+		lossFrames = MaxFramesPerPacket
+	}
+
 	b.playoutSeq++
+	b.playoutFrameIdx = 0
+	b.lossFramesRemaining = lossFrames - 1
+
+	// Drop stale slot at the new window boundary if it held an unpopped entry
 	agedIdx := int((b.playoutSeq + uint16(MaxSlotCount-1)) & slotMask)
 	agedSlot := &b.slots[agedIdx]
 	if agedSlot.valid && !b.slotIsCurrent(agedSlot) {
+		b.bufferedCount -= agedSlot.nFrames
+		if b.bufferedCount < 0 {
+			b.bufferedCount = 0
+		}
 		agedSlot.valid = false
-		b.bufferedCount--
 	}
+
 	b.stats.EmittedPLC++
 	b.stats.CurrentBuffered = b.bufferedCount
 	return 0, true, true

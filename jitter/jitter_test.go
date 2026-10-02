@@ -155,6 +155,42 @@ func TestJitterBufferMultiFramePacket(t *testing.T) {
 	}
 }
 
+func TestJitterBufferConsecutiveMultiFramePackets(t *testing.T) {
+	jb := jitter.New(jitter.Config{TargetDelay: 20 * time.Millisecond})
+
+	// Push 5 consecutive 20-ms packets (2 frames each = 10 frames total)
+	// per RFC 3550 §5.1, sequence numbers increment by 1 per packet (100, 101, 102, 103, 104)
+	for p := 0; p < 5; p++ {
+		payload := make([]byte, 20)
+		payload[0] = byte(p*2 + 1)
+		payload[10] = byte(p*2 + 2)
+		seq := uint16(100 + p)
+		ts := uint32(p * 160)
+		if err := jb.Push(seq, ts, payload); err != nil {
+			t.Fatalf("Push %d: %v", p, err)
+		}
+	}
+
+	for f := 0; f < 10; f++ {
+		frame, ok := jb.Pop()
+		if !ok || frame == nil {
+			t.Fatalf("frame %d: ok=%v frame=%v", f, ok, frame)
+		}
+		expectedTag := byte(f + 1)
+		if frame[0] != expectedTag {
+			t.Errorf("frame %d tag = %d, want %d", f, frame[0], expectedTag)
+		}
+	}
+
+	stats := jb.Stats()
+	if stats.DupPackets != 0 {
+		t.Errorf("expected 0 DupPackets, got %d", stats.DupPackets)
+	}
+	if stats.DroppedByWrap != 0 {
+		t.Errorf("expected 0 DroppedByWrap, got %d", stats.DroppedByWrap)
+	}
+}
+
 func TestJitterBufferConcurrency(t *testing.T) {
 	jb := jitter.New(jitter.Config{TargetDelay: 20 * time.Millisecond})
 
