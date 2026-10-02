@@ -92,13 +92,13 @@ jobs:
           go-version: '1.27'
 
       - name: Fuzz Decoder (smoke)
-        run: go test -fuzz=FuzzDecode -fuzztime=20s .
+        run: go test -fuzz=^FuzzDecode$ -fuzztime=20s .
 
       - name: Fuzz Encoder (smoke)
-        run: go test -fuzz=FuzzEncode -fuzztime=20s .
+        run: go test -fuzz=^FuzzEncode$ -fuzztime=20s .
 
       - name: Fuzz RTP Unpack (smoke)
-        run: go test -fuzz=FuzzUnpack -fuzztime=20s ./rtp/
+        run: go test -fuzz=^FuzzUnpack$ -fuzztime=20s ./rtp/
 
       - name: Fuzz SDP Parsing (smoke)
-        run: go test -fuzz=FuzzParseFMTPParams -fuzztime=20s ./sdp/
+        run: go test -fuzz=^FuzzParseFMTPParams$ -fuzztime=20s ./sdp/
