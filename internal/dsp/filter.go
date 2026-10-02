@@ -102,12 +102,13 @@ func SynthesisFilter(out, x, a, mem []float32, update bool) {
 		}
 	}
 
+	a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 := aCoeffs[0], aCoeffs[1], aCoeffs[2], aCoeffs[3], aCoeffs[4], aCoeffs[5], aCoeffs[6], aCoeffs[7], aCoeffs[8], aCoeffs[9]
 	for i := 0; i < l; i++ {
-		s := x[i]
 		idx := params.M + i
-		for j := 0; j < params.M; j++ {
-			s -= aCoeffs[j] * yy[idx-1-j]
-		}
+		p := yy[i:idx]
+		_ = p[9]
+		s := x[i] - a0*p[9] - a1*p[8] - a2*p[7] - a3*p[6] - a4*p[5] -
+			a5*p[4] - a6*p[3] - a7*p[2] - a8*p[1] - a9*p[0]
 		yy[idx] = s
 		out[i] = s
 	}
@@ -155,12 +156,13 @@ func Residue(out, x, a, mem []float32, update bool) {
 	}
 	copy(xx[params.M:], x[:l])
 
+	a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 := aCoeffs[0], aCoeffs[1], aCoeffs[2], aCoeffs[3], aCoeffs[4], aCoeffs[5], aCoeffs[6], aCoeffs[7], aCoeffs[8], aCoeffs[9]
 	for i := 0; i < l; i++ {
-		s := x[i]
 		idx := params.M + i
-		for j := 0; j < params.M; j++ {
-			s += aCoeffs[j] * xx[idx-1-j]
-		}
+		p := xx[i:idx]
+		_ = p[9]
+		s := x[i] + a0*p[9] + a1*p[8] + a2*p[7] + a3*p[6] + a4*p[5] +
+			a5*p[4] + a6*p[3] + a7*p[2] + a8*p[1] + a9*p[0]
 		out[i] = s
 	}
 
