@@ -135,3 +135,44 @@ func Example_jitterBuffer() {
 	// Output:
 	// Playout: n=10 isLoss=false ok=true
 }
+
+func ExampleEncoderPool() {
+	pool := g729.NewEncoderPool(g729.ProfileFast())
+	enc := pool.Get()
+	defer pool.Put(enc)
+
+	pcm := make([]int16, 80)
+	dst := make([]byte, 10)
+	n, _, _ := enc.Encode(dst, pcm)
+	fmt.Printf("Pool encoded %d bytes\n", n)
+	// Output:
+	// Pool encoded 10 bytes
+}
+
+func ExampleDecoderPool() {
+	pool := g729.NewDecoderPool()
+	dec := pool.Get()
+	defer pool.Put(dec)
+
+	pcm := make([]int16, 80)
+	frame := make([]byte, 10)
+	_ = dec.Decode(pcm, frame)
+	fmt.Printf("Pool decoded 80 samples\n")
+	// Output:
+	// Pool decoded 80 samples
+}
+
+func ExampleRTCPTracker() {
+	tracker := rtp.NewRTCPTracker(0x12345678)
+	now := time.Now()
+
+	// Record arrival of 2 packets @ 20 ms interval
+	tracker.RecordPacket(100, 1000, now)
+	tracker.RecordPacket(101, 1160, now.Add(20*time.Millisecond))
+
+	report := tracker.GenerateReport()
+	fmt.Printf("Packets received: %d, Loss: %.1f%%, MOS: %.2f\n",
+		report.PacketsReceived, report.LossRate()*100, report.EstimatedMOS(20*time.Millisecond))
+	// Output:
+	// Packets received: 2, Loss: 0.0%, MOS: 4.09
+}
