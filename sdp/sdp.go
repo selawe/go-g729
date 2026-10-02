@@ -48,7 +48,10 @@ const (
 	// ClockRate is the G.729 RTP clock rate in Hz.
 	ClockRate = 8000
 
-	// DefaultAnnexA is the default annexa value per RFC 3551 (true = G.729 Annex A).
+	// DefaultAnnexA is the default annexa value (true = G.729 Annex A).
+	// Note: RFC 3551 §4.5.6 only standardises the "annexb" parameter for G.729
+	// because G.729 and G.729A are bitstream-interoperable. The "annexa" key is
+	// supported as an optional convention for explicit algorithmic preference.
 	DefaultAnnexA = true
 
 	// DefaultAnnexB is the default annexb value per RFC 3551 (true = enabled).
@@ -244,9 +247,11 @@ func ConfigFromFMTP(fmtp string) (g729.Config, error) {
 	}, nil
 }
 
-// NegotiateAnnexA negotiates the G.729 vs G.729A variant between offer and answer
-// per RFC 3551 §4.5.6. Both sides must agree to use Annex A; if either side specifies
-// annexa=no, full-complexity G.729 is used (returns false).
+// NegotiateAnnexA negotiates the G.729 vs G.729A variant between offer and answer.
+// While RFC 3551 §4.5.6 treats G.729 and G.729A as bitstream-interoperable without
+// requiring explicit signaling, if peers specify "annexa", Annex A is used only if
+// neither side specifies annexa=no; if either side asserts annexa=no, full-complexity
+// G.729 is used (returns false).
 //
 // On parse error the returned bool is false — callers must always check err first
 // before using the result. This matches NegotiateAnnexB behaviour.
