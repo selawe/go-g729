@@ -66,12 +66,6 @@ func TestDecoderSpeechRoundTrip(t *testing.T) {
 			t.Fatalf("decode frame %d failed: %v", f, err)
 		}
 
-		// Verify decoded signal is non-trivial and bounded
-		for i, s := range decoded {
-			if s > 32767 || s < -32768 {
-				t.Fatalf("frame %d sample %d clipped: %d", f, i, s)
-			}
-		}
 	}
 }
 
@@ -106,12 +100,6 @@ func TestDecoderParityError(t *testing.T) {
 		t.Fatalf("decode with parity error failed: %v", err)
 	}
 
-	// Verify decoded speech is finite
-	for i, s := range decoded {
-		if s > 32767 || s < -32768 {
-			t.Fatalf("sample %d invalid: %d", i, s)
-		}
-	}
 }
 
 func TestDecoderComfortNoise(t *testing.T) {
@@ -141,11 +129,6 @@ func TestDecoderComfortNoise(t *testing.T) {
 			t.Fatalf("frame %d decode failed (n=%d): %v", f, n, err)
 		}
 
-		for i, s := range decoded {
-			if s > 32767 || s < -32768 {
-				t.Fatalf("frame %d sample %d invalid: %d", f, i, s)
-			}
-		}
 	}
 }
 
@@ -405,10 +388,8 @@ func BenchmarkDecodeSpeech(b *testing.B) {
 
 	var dst [80]int16
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = dec.Decode(dst[:], bitstream[:])
 	}
 	b.StopTimer()
@@ -421,10 +402,8 @@ func BenchmarkDecodeSID(b *testing.B) {
 	sidBytes := [2]byte{0x55, 0xAA}
 	var dst [80]int16
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = dec.Decode(dst[:], sidBytes[:])
 	}
 	b.StopTimer()
@@ -435,10 +414,8 @@ func BenchmarkDecodePLC(b *testing.B) {
 	dec := NewDecoder()
 	var dst [80]int16
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = dec.Decode(dst[:], nil)
 	}
 	b.StopTimer()

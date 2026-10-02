@@ -318,10 +318,8 @@ func BenchmarkEncodeBatchInto(b *testing.B) {
 	dst := make([]byte, 40)
 	frameTypes := make([]FrameType, 4)
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = enc.EncodeBatchInto(dst, src, frameTypes)
 	}
 	b.StopTimer()
@@ -337,10 +335,8 @@ func BenchmarkEncodeG729A(b *testing.B) {
 	frame := generateSine(1000.0, 80, 8000.0)
 	var dst [10]byte
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = enc.Encode(dst[:], frame)
 	}
 	b.StopTimer()
@@ -356,10 +352,8 @@ func BenchmarkEncodeG729Full(b *testing.B) {
 	frame := generateSine(1000.0, 80, 8000.0)
 	var dst [10]byte
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = enc.Encode(dst[:], frame)
 	}
 	b.StopTimer()
@@ -406,10 +400,8 @@ func BenchmarkEncodeG729A_WithVAD(b *testing.B) {
 	frame := generateSine(1000.0, 80, 8000.0)
 	var dst [10]byte
 
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = enc.Encode(dst[:], frame)
 	}
 	b.StopTimer()

@@ -280,7 +280,7 @@ func TestAnnexBDecoderSequences(t *testing.T) {
 		},
 		{
 			"SID→untransmitted→speech",
-			[][]byte{sidBS[:], []byte{}, []byte{}, speechBS[:], speechBS[:]},
+			[][]byte{sidBS[:], {}, {}, speechBS[:], speechBS[:]},
 		},
 		{
 			"7 consecutive PLC (progressive mute)",

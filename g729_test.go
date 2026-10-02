@@ -206,11 +206,6 @@ func TestEndToEndOfficialSpeechVector(t *testing.T) {
 			if err := dec.Decode(decoded[f*80:(f+1)*80], bitstream[:]); err != nil {
 				t.Fatalf("frame %d decode failed: %v", f, err)
 			}
-			for i, s := range decoded[f*80 : (f+1)*80] {
-				if s > 32767 || s < -32768 {
-					t.Fatalf("frame %d sample %d out of bounds: %d", f, i, s)
-				}
-			}
 		}
 
 		overallSNR, segSNR := computeSNR(pcm[:frames*80], decoded)
@@ -374,12 +369,6 @@ func TestEndToEndPacketLossConcealment(t *testing.T) {
 			t.Fatalf("frame %d decode failed (lost=%v): %v", f, isLost, err)
 		}
 
-		// Verify no audio explosion or NaN values
-		for i, s := range decoded {
-			if s > 32767 || s < -32768 {
-				t.Fatalf("frame %d sample %d clipped: %d", f, i, s)
-			}
-		}
 	}
 
 	t.Logf("PLC Test: %d of %d frames lost and concealed cleanly", lostCount, totalFrames)

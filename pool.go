@@ -23,11 +23,10 @@ func NewEncoderPool(cfg Config) *EncoderPool {
 }
 
 // Get retrieves an Encoder from the pool.
-// The returned Encoder is guaranteed to be in a freshly reset initial state.
+// The returned Encoder is in a freshly reset state: Put resets before pooling,
+// and pool.New creates a fresh instance via NewEncoder.
 func (p *EncoderPool) Get() *Encoder {
-	enc := p.pool.Get().(*Encoder)
-	enc.Reset()
-	return enc
+	return p.pool.Get().(*Encoder)
 }
 
 // Put returns an Encoder to the pool for reuse.
@@ -63,11 +62,10 @@ func NewDecoderPoolWithConfig(cfg DecoderConfig) *DecoderPool {
 }
 
 // Get retrieves a Decoder from the pool.
-// The returned Decoder is guaranteed to be in a freshly reset initial state.
+// The returned Decoder is in a freshly reset state: Put resets before pooling,
+// and pool.New creates a fresh instance via NewDecoderWithConfig.
 func (p *DecoderPool) Get() *Decoder {
-	dec := p.pool.Get().(*Decoder)
-	dec.Reset()
-	return dec
+	return p.pool.Get().(*Decoder)
 }
 
 // Put returns a Decoder to the pool for reuse.

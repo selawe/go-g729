@@ -58,9 +58,8 @@ func BenchmarkRTFDecode(b *testing.B) {
 // Reset() must be O(1) — just zeroing fixed-size struct fields.
 func BenchmarkReset(b *testing.B) {
 	enc := NewEncoder(DefaultConfig())
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		enc.Reset()
 	}
 }
@@ -68,9 +67,8 @@ func BenchmarkReset(b *testing.B) {
 // BenchmarkDecoderReset measures decoder Reset() overhead.
 func BenchmarkDecoderReset(b *testing.B) {
 	dec := NewDecoder()
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dec.Reset()
 	}
 }
@@ -127,7 +125,7 @@ func BenchmarkConcurrentDecode(b *testing.B) {
 // NewEncoder should do exactly one allocation (the encoder struct).
 func BenchmarkNewEncoder(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		enc := NewEncoder(DefaultConfig())
 		_ = enc
 	}
@@ -136,7 +134,7 @@ func BenchmarkNewEncoder(b *testing.B) {
 // BenchmarkNewDecoder measures the cost of creating a new Decoder instance.
 func BenchmarkNewDecoder(b *testing.B) {
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dec := NewDecoder()
 		_ = dec
 	}
@@ -156,10 +154,11 @@ func BenchmarkSustainedEncoding(b *testing.B) {
 	enc := NewEncoder(Config{Variant: VariantG729A, EnableVAD: false})
 	dst := make([]byte, 10)
 
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_, _, _ = enc.Encode(dst, frames[i%numFrames])
+		i++
 	}
 }
 
@@ -183,10 +182,11 @@ func BenchmarkSustainedDecoding(b *testing.B) {
 	dec := NewDecoder()
 	dst := make([]int16, 80)
 
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_ = dec.Decode(dst, bitstreams[i%numFrames])
+		i++
 	}
 }
 

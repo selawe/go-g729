@@ -80,16 +80,6 @@ func FuzzDecode(f *testing.F) {
 			return
 		}
 
-		// For valid frames: output samples must be finite int16 values.
-		// (Go's int16 range is always [-32768, 32767] by definition, but we
-		// verify the decoder doesn't produce the sentinel NaN-ish pattern that
-		// could arise from float32 overflow before int16 conversion.)
-		for i, s := range dst {
-			if s > 32767 || s < -32768 {
-				// This can never happen for int16 but catches if the type were wrong
-				t.Errorf("sample %d out of int16 range: %d", i, s)
-			}
-		}
 	})
 }
 
