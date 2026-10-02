@@ -128,6 +128,92 @@ func TestPackUnpackSuppressed(t *testing.T) {
 	}
 }
 
+func TestPackUnpackMixed(t *testing.T) {
+	speech := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	speech2 := []byte{11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
+	sid := []byte{0x55, 0xAA}
+
+	// 1. 20 ms transition packet: 1 speech frame + 1 SID frame (12 bytes)
+	p12, err := rtp.Pack([][]byte{speech, sid})
+	if err != nil {
+		t.Fatalf("Pack 12 bytes: %v", err)
+	}
+	if len(p12) != 12 {
+		t.Fatalf("expected 12 bytes, got %d", len(p12))
+	}
+
+	frames12, info12, err := rtp.Unpack(p12)
+	if err != nil {
+		t.Fatalf("Unpack 12 bytes: %v", err)
+	}
+	if info12.Type != rtp.FrameMixed {
+		t.Errorf("type = %v, want FrameMixed", info12.Type)
+	}
+	if info12.NumFrames != 2 || info12.DurationMs != 20 || !info12.HasSID {
+		t.Errorf("info12 = %+v, want NumFrames=2, DurationMs=20, HasSID=true", info12)
+	}
+	if len(frames12) != 2 || len(frames12[0]) != 10 || len(frames12[1]) != 2 {
+		t.Fatalf("frames12 len mismatch: %d frames", len(frames12))
+	}
+	if !bytes.Equal(frames12[0], speech) || !bytes.Equal(frames12[1], sid) {
+		t.Errorf("frames12 content mismatch")
+	}
+
+	// 2. 30 ms transition packet: 2 speech frames + 1 SID frame (22 bytes)
+	p22, err := rtp.Pack([][]byte{speech, speech2, sid})
+	if err != nil {
+		t.Fatalf("Pack 22 bytes: %v", err)
+	}
+	if len(p22) != 22 {
+		t.Fatalf("expected 22 bytes, got %d", len(p22))
+	}
+
+	frames22, info22, err := rtp.Unpack(p22)
+	if err != nil {
+		t.Fatalf("Unpack 22 bytes: %v", err)
+	}
+	if info22.Type != rtp.FrameMixed || info22.NumFrames != 3 || info22.DurationMs != 30 || !info22.HasSID {
+		t.Errorf("info22 = %+v", info22)
+	}
+	if len(frames22) != 3 || len(frames22[0]) != 10 || len(frames22[1]) != 10 || len(frames22[2]) != 2 {
+		t.Fatalf("frames22 len mismatch: %d frames", len(frames22))
+	}
+
+	// 3. UnpackInto with mixed 12-byte payload
+	dstBuf := make([][]byte, 2)
+	dstBuf[0] = make([]byte, 10)
+	dstBuf[1] = make([]byte, 10)
+	nInto, infoInto, err := rtp.UnpackInto(dstBuf, p12)
+	if err != nil || nInto != 2 || infoInto.Type != rtp.FrameMixed {
+		t.Fatalf("UnpackInto 12 bytes: n=%d info=%+v err=%v", nInto, infoInto, err)
+	}
+	if !bytes.Equal(dstBuf[0], speech) || !bytes.Equal(dstBuf[1][:2], sid) {
+		t.Errorf("UnpackInto content mismatch")
+	}
+}
+
+func TestFrameCount(t *testing.T) {
+	cases := []struct {
+		len  int
+		want int
+	}{
+		{0, 0},
+		{2, 1},
+		{10, 1},
+		{12, 2},
+		{20, 2},
+		{22, 3},
+		{30, 3},
+		{40, 4},
+		{7, 0},
+	}
+	for _, tc := range cases {
+		if got := rtp.FrameCount(tc.len); got != tc.want {
+			t.Errorf("FrameCount(%d) = %d, want %d", tc.len, got, tc.want)
+		}
+	}
+}
+
 func TestPackErrors(t *testing.T) {
 	// Empty frames slice
 	if _, err := rtp.Pack(nil); err == nil {

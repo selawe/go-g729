@@ -74,6 +74,8 @@ const (
 	FrameSID
 	// FrameSuppressed indicates a DTX-suppressed frame (no bytes transmitted).
 	FrameSuppressed
+	// FrameMixed indicates a transition packet containing speech frame(s) followed by 1 SID frame (RFC 3551 §4.5.6).
+	FrameMixed
 )
 
 func (f FrameType) String() string {
@@ -84,6 +86,8 @@ func (f FrameType) String() string {
 		return "SID"
 	case FrameSuppressed:
 		return "suppressed"
+	case FrameMixed:
+		return "mixed"
 	default:
 		return fmt.Sprintf("FrameType(%d)", int(f))
 	}
@@ -93,11 +97,13 @@ func (f FrameType) String() string {
 type PayloadInfo struct {
 	// Type is the frame type present in the payload.
 	Type FrameType
-	// NumFrames is the number of speech frames bundled in the payload.
-	// Always 0 for SID and Suppressed.
+	// NumFrames is the total number of frames bundled in the payload.
+	// Always 0 for pure SID and Suppressed.
 	NumFrames int
 	// DurationMs is the total audio duration covered by this payload in ms.
 	DurationMs int
+	// HasSID reports whether a 2-byte Annex B SID frame is present in the payload.
+	HasSID bool
 }
 
 // HeaderOverheadIPv4RTP is the typical size in bytes of IPv4 (20B) + UDP (8B) + RTP (12B) headers.
@@ -115,7 +121,9 @@ func FramesPerPacketForMTU(mtu int) int {
 }
 
 // PackInto bundles one or more G.729 encoded frames into dst without heap allocation.
-// dst must have capacity >= the total packed payload size (2 bytes for SID, len(frames)*10 for speech).
+// Per RFC 3551 §4.5.6, a packet consists of zero or more 10-byte speech frames,
+// optionally followed by at most one 2-byte Annex B SID frame.
+// dst must have capacity >= the total packed payload size.
 //
 // Returns the number of bytes written to dst, or an error if frames are invalid or dst is too small.
 func PackInto(dst []byte, frames [][]byte) (int, error) {
@@ -123,35 +131,37 @@ func PackInto(dst []byte, frames [][]byte) (int, error) {
 		return 0, ErrEmptyPayload
 	}
 
-	first := len(frames[0])
-	if first != FrameBytes && first != SIDBytes {
-		return 0, fmt.Errorf("%w: first frame has %d bytes (want %d or %d)",
-			ErrInvalidPayload, first, FrameBytes, SIDBytes)
+	total := 0
+	hasSID := false
+	for i, f := range frames {
+		switch len(f) {
+		case FrameBytes:
+			if hasSID {
+				// Per RFC 3551 §4.5.6, SID frame can only be the final frame in a packet
+				return 0, fmt.Errorf("%w: speech frame %d follows SID frame", ErrInvalidPayload, i)
+			}
+			total += FrameBytes
+		case SIDBytes:
+			if hasSID {
+				// At most one SID frame per packet per RFC 3551 §4.5.6
+				return 0, fmt.Errorf("%w: multiple SID frames in packet (frame %d)", ErrInvalidPayload, i)
+			}
+			hasSID = true
+			total += SIDBytes
+		default:
+			return 0, fmt.Errorf("%w: frame %d has %d bytes (want %d for speech or %d for SID)",
+				ErrInvalidPayload, i, len(f), FrameBytes, SIDBytes)
+		}
 	}
 
-	if first == SIDBytes {
-		if len(frames) != 1 {
-			return 0, fmt.Errorf("%w: SID payload must contain exactly 1 frame, got %d",
-				ErrInvalidPayload, len(frames))
-		}
-		if len(dst) < SIDBytes {
-			return 0, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), SIDBytes)
-		}
-		copy(dst[:SIDBytes], frames[0])
-		return SIDBytes, nil
-	}
-
-	total := len(frames) * FrameBytes
 	if len(dst) < total {
 		return 0, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), total)
 	}
 
-	for i, f := range frames {
-		if len(f) != FrameBytes {
-			return 0, fmt.Errorf("%w: frame %d has %d bytes (want %d for speech)",
-				ErrInvalidPayload, i, len(f), FrameBytes)
-		}
-		copy(dst[i*FrameBytes:(i+1)*FrameBytes], f)
+	offset := 0
+	for _, f := range frames {
+		copy(dst[offset:offset+len(f)], f)
+		offset += len(f)
 	}
 
 	return total, nil
@@ -159,21 +169,22 @@ func PackInto(dst []byte, frames [][]byte) (int, error) {
 
 // Pack bundles one or more G.729 encoded frames into a single allocated RTP payload.
 //
-// Rules:
-//   - Speech frames: all must be exactly 10 bytes. Multiple frames are
-//     concatenated; the payload length will be n×10.
-//   - SID frame: exactly one 2-byte frame; must not be mixed with speech frames.
-//   - Suppressed frames: caller must not call Pack for suppressed frames —
-//     simply skip sending an RTP packet.
+// Per RFC 3551 §4.5.6, a packet may contain:
+//   - Speech frames: all must be exactly 10 bytes (payload length = n×10).
+//   - SID frame: a single 2-byte comfort noise frame (payload length = 2).
+//   - Mixed transition packet: n speech frames followed by 1 SID frame (payload length = n×10 + 2).
+//
+// Suppressed frames: caller must not call Pack for suppressed frames —
+// simply skip sending an RTP packet.
 //
 // For zero-allocation packing in high-throughput loops, use PackInto.
 func Pack(frames [][]byte) ([]byte, error) {
 	if len(frames) == 0 {
 		return nil, ErrEmptyPayload
 	}
-	total := len(frames) * FrameBytes
-	if len(frames[0]) == SIDBytes {
-		total = SIDBytes
+	total := 0
+	for _, f := range frames {
+		total += len(f)
 	}
 	out := make([]byte, total)
 	n, err := PackInto(out, frames)
@@ -185,14 +196,16 @@ func Pack(frames [][]byte) ([]byte, error) {
 
 // Unpack parses a G.729 RTP payload into individual frame byte slices.
 //
-// Valid payload lengths:
+// Valid payload lengths per RFC 3551 §4.5.6:
 //   - 0 bytes: suppressed DTX frame — returns one nil slice (caller should call
 //     Decoder.Decode with nil to trigger PLC / comfort noise).
 //   - 2 bytes: SID frame — returns one 2-byte slice.
 //   - n×10 bytes (n ≥ 1): n speech frames — returns n 10-byte slices.
+//   - n×10 + 2 bytes (n ≥ 1): n speech frames followed by 1 SID frame — returns (n+1) slices.
 //
 // Returns ErrInvalidPayload for any other length.
 func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
+	rem := len(payload) % FrameBytes
 	switch {
 	case len(payload) == 0:
 		return [][]byte{nil}, PayloadInfo{Type: FrameSuppressed, DurationMs: FrameDurationMs}, nil
@@ -200,9 +213,13 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 	case len(payload) == SIDBytes:
 		frame := make([]byte, SIDBytes)
 		copy(frame, payload)
-		return [][]byte{frame}, PayloadInfo{Type: FrameSID, DurationMs: FrameDurationMs}, nil
+		return [][]byte{frame}, PayloadInfo{
+			Type:       FrameSID,
+			DurationMs: FrameDurationMs,
+			HasSID:     true,
+		}, nil
 
-	case len(payload)%FrameBytes == 0:
+	case rem == 0:
 		n := len(payload) / FrameBytes
 		if n > MaxFramesPerPacket {
 			return nil, PayloadInfo{}, fmt.Errorf("%w: %d frames exceeds MaxFramesPerPacket (%d)",
@@ -220,8 +237,33 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 			DurationMs: n * FrameDurationMs,
 		}, nil
 
+	case rem == SIDBytes && len(payload) > SIDBytes:
+		// RFC 3551 §4.5.6 transition packet: N speech frames followed by 1 SID frame
+		nSpeech := len(payload) / FrameBytes
+		nTotal := nSpeech + 1
+		if nTotal > MaxFramesPerPacket {
+			return nil, PayloadInfo{}, fmt.Errorf("%w: %d frames exceeds MaxFramesPerPacket (%d)",
+				ErrInvalidPayload, nTotal, MaxFramesPerPacket)
+		}
+		frames := make([][]byte, nTotal)
+		for i := 0; i < nSpeech; i++ {
+			frame := make([]byte, FrameBytes)
+			copy(frame, payload[i*FrameBytes:(i+1)*FrameBytes])
+			frames[i] = frame
+		}
+		sidFrame := make([]byte, SIDBytes)
+		copy(sidFrame, payload[nSpeech*FrameBytes:])
+		frames[nSpeech] = sidFrame
+
+		return frames, PayloadInfo{
+			Type:       FrameMixed,
+			NumFrames:  nTotal,
+			DurationMs: nTotal * FrameDurationMs,
+			HasSID:     true,
+		}, nil
+
 	default:
-		return nil, PayloadInfo{}, fmt.Errorf("%w: length %d is not 0, 2, or a multiple of 10",
+		return nil, PayloadInfo{}, fmt.Errorf("%w: length %d is not 0, 2, a multiple of 10, or 10N+2",
 			ErrInvalidPayload, len(payload))
 	}
 }
@@ -231,6 +273,7 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 //   - 0 bytes (suppressed): requires len(dst) >= 1 (dst[0] set to nil)
 //   - 2 bytes (SID):        requires len(dst) >= 1
 //   - n×10 bytes (speech):  requires len(dst) >= n
+//   - n×10 + 2 bytes:       requires len(dst) >= n+1
 //
 // Two-mode aliasing behaviour, chosen per-slot by capacity:
 //
@@ -249,6 +292,7 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 // Returns the number of frames populated in dst, PayloadInfo, and an error if dst
 // is too short or payload length is invalid.
 func UnpackInto(dst [][]byte, payload []byte) (int, PayloadInfo, error) {
+	rem := len(payload) % FrameBytes
 	switch {
 	case len(payload) == 0:
 		if len(dst) < 1 {
@@ -267,9 +311,9 @@ func UnpackInto(dst [][]byte, payload []byte) (int, PayloadInfo, error) {
 		} else {
 			dst[0] = payload[:SIDBytes]
 		}
-		return 1, PayloadInfo{Type: FrameSID, DurationMs: FrameDurationMs}, nil
+		return 1, PayloadInfo{Type: FrameSID, DurationMs: FrameDurationMs, HasSID: true}, nil
 
-	case len(payload)%FrameBytes == 0:
+	case rem == 0:
 		n := len(payload) / FrameBytes
 		if len(dst) < n {
 			return 0, PayloadInfo{}, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), n)
@@ -289,8 +333,37 @@ func UnpackInto(dst [][]byte, payload []byte) (int, PayloadInfo, error) {
 			DurationMs: n * FrameDurationMs,
 		}, nil
 
+	case rem == SIDBytes && len(payload) > SIDBytes:
+		nSpeech := len(payload) / FrameBytes
+		nTotal := nSpeech + 1
+		if len(dst) < nTotal {
+			return 0, PayloadInfo{}, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), nTotal)
+		}
+		for i := 0; i < nSpeech; i++ {
+			sub := payload[i*FrameBytes : (i+1)*FrameBytes]
+			if cap(dst[i]) >= FrameBytes {
+				dst[i] = dst[i][:FrameBytes]
+				copy(dst[i], sub)
+			} else {
+				dst[i] = sub
+			}
+		}
+		subSID := payload[nSpeech*FrameBytes:]
+		if cap(dst[nSpeech]) >= SIDBytes {
+			dst[nSpeech] = dst[nSpeech][:SIDBytes]
+			copy(dst[nSpeech], subSID)
+		} else {
+			dst[nSpeech] = subSID
+		}
+		return nTotal, PayloadInfo{
+			Type:       FrameMixed,
+			NumFrames:  nTotal,
+			DurationMs: nTotal * FrameDurationMs,
+			HasSID:     true,
+		}, nil
+
 	default:
-		return 0, PayloadInfo{}, fmt.Errorf("%w: length %d is not 0, 2, or a multiple of 10",
+		return 0, PayloadInfo{}, fmt.Errorf("%w: length %d is not 0, 2, a multiple of 10, or 10N+2",
 			ErrInvalidPayload, len(payload))
 	}
 }
@@ -303,11 +376,18 @@ func TimestampForFrame(baseTimestamp uint32, frameIndex int) uint32 {
 	return baseTimestamp + uint32(frameIndex)*TimestampIncrement
 }
 
-// FrameCount returns the number of G.729 speech frames that fit in a payload
-// of the given length, or 0 if the length represents a SID or suppressed frame.
+// FrameCount returns the total number of G.729 frames (speech and SID) that fit in a payload
+// of the given length, or 0 if the length represents a suppressed frame or invalid payload.
 func FrameCount(payloadLen int) int {
-	if payloadLen%FrameBytes == 0 {
+	if payloadLen <= 0 {
+		return 0
+	}
+	rem := payloadLen % FrameBytes
+	if rem == 0 {
 		return payloadLen / FrameBytes
+	}
+	if rem == SIDBytes {
+		return (payloadLen / FrameBytes) + 1
 	}
 	return 0
 }
