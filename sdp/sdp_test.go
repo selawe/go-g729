@@ -337,3 +337,22 @@ func TestParseFMTPParamsAcceptsAtBoundary(t *testing.T) {
 		t.Errorf("annexb=yes at boundary length should parse true, got false")
 	}
 }
+
+func TestTelephoneEventSDP(t *testing.T) {
+	if sdp.DefaultTelephoneEventPayloadType != 101 {
+		t.Errorf("DefaultTelephoneEventPayloadType = %d, want 101", sdp.DefaultTelephoneEventPayloadType)
+	}
+	if sdp.TelephoneEventClockRate != 8000 {
+		t.Errorf("TelephoneEventClockRate = %d, want 8000", sdp.TelephoneEventClockRate)
+	}
+
+	rtpmap := sdp.TelephoneEventRTPMapLine(101)
+	if rtpmap != "a=rtpmap:101 telephone-event/8000" {
+		t.Errorf("TelephoneEventRTPMapLine = %q, want 'a=rtpmap:101 telephone-event/8000'", rtpmap)
+	}
+
+	fmtp := sdp.TelephoneEventFMTPLine(101)
+	if fmtp != "a=fmtp:101 0-16" {
+		t.Errorf("TelephoneEventFMTPLine = %q, want 'a=fmtp:101 0-16'", fmtp)
+	}
+}

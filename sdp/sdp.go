@@ -63,6 +63,13 @@ const (
 	// unknown forward-compatible extensions while blocking DoS via oversized
 	// fmtp input (attacker-supplied SDP driving unbounded string split).
 	MaxFMTPLength = 1024
+
+	// DefaultTelephoneEventPayloadType is the standard dynamic RTP payload type
+	// commonly allocated for RFC 4733 / RFC 2833 DTMF telephone-events.
+	DefaultTelephoneEventPayloadType = 101
+
+	// TelephoneEventClockRate is the clock rate (8000 Hz) for narrowband telephone-events.
+	TelephoneEventClockRate = 8000
 )
 
 // Sentinel errors.
@@ -83,6 +90,20 @@ var (
 //	a=rtpmap:18 G729/8000
 func RTPMapLine(payloadType int) string {
 	return fmt.Sprintf("a=rtpmap:%d G729/%d", payloadType, ClockRate)
+}
+
+// TelephoneEventRTPMapLine returns the RFC 4733 a=rtpmap SDP attribute line for DTMF telephone-events.
+//
+//	a=rtpmap:101 telephone-event/8000
+func TelephoneEventRTPMapLine(payloadType int) string {
+	return fmt.Sprintf("a=rtpmap:%d telephone-event/%d", payloadType, TelephoneEventClockRate)
+}
+
+// TelephoneEventFMTPLine returns the RFC 4733 a=fmtp SDP attribute line for DTMF events (DTMF 0-15 and flash 16).
+//
+//	a=fmtp:101 0-16
+func TelephoneEventFMTPLine(payloadType int) string {
+	return fmt.Sprintf("a=fmtp:%d 0-16", payloadType)
 }
 
 // FMTPLine builds the a=fmtp SDP attribute line for G.729 from a Config.
