@@ -32,10 +32,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  %s -e input.wav output.g729           # Encode WAV to G.729\n", filepath.Base(os.Args[0]))
-		fmt.Fprintf(os.Stderr, "  %s -e -vad input.pcm output.g729      # Encode PCM with Annex B VAD/DTX\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "  %s -e input.wav output.g729           # Encode WAV to G.729 (CBR 8 kbps)\n", filepath.Base(os.Args[0]))
 		fmt.Fprintf(os.Stderr, "  %s -d input.g729 output.wav           # Decode G.729 to WAV\n", filepath.Base(os.Args[0]))
 		fmt.Fprintf(os.Stderr, "  %s -d -loss 0.05 input.g729 out.wav   # Decode with 5%% packet loss concealment\n", filepath.Base(os.Args[0]))
+		fmt.Fprintf(os.Stderr, "\nNote: Raw .g729 bitstreams are CBR 8 kbps (10 bytes/frame). Annex B VAD produces VBR\n")
+		fmt.Fprintf(os.Stderr, "frames (10B speech, 2B SID, 0B silence) which require packet/container framing (e.g. RTP).\n")
 	}
 
 	flag.Parse()
@@ -170,6 +171,8 @@ func runEncode(inFile, outFile string, isFull bool, enableVAD bool, showBench bo
 	if enableVAD {
 		fmt.Printf("  SID frames:     %d (2 bytes each)\n", sidCount)
 		fmt.Printf("  Untransmitted:  %d (0 bytes)\n", untransCount)
+		fmt.Printf("  Notice: Output contains Annex B VBR frames. Decoding raw bitstreams with\n")
+		fmt.Printf("          VBR requires packet framing (e.g. RTP). Use CBR mode for raw .g729 files.\n")
 	}
 	fmt.Printf("  Output size:    %d bytes\n", len(outBuf))
 	if showBench {

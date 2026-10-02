@@ -327,10 +327,7 @@ enc := g729.NewEncoder(remoteCfg) // Full G.729 CBR 8 kbps
 # Encode WAV ke G.729 (CBR 8 kbps)
 g729tool -e input.wav output.g729
 
-# Encode dengan Annex B VAD (DTX/CNG aktif)
-g729tool -e -vad input.wav output.g729
-
-# Decode ke WAV
+# Decode G.729 CBR ke WAV
 g729tool -d input.g729 output.wav
 
 # Decode dengan simulasi 5% packet loss
@@ -339,6 +336,9 @@ g729tool -d -loss 0.05 input.g729 output.wav
 # Benchmark dengan Full G.729
 g729tool -bench -full -e speech.wav speech.g729
 ```
+
+> **Catatan:** Bitstream mentah `.g729` beroperasi pada mode CBR 8 kbps (10 byte per frame 10 ms). Mode Annex B VAD/DTX menghasilkan frame VBR (10B speech, 2B SID, 0B hening) yang dirancang untuk transmisi paket berbingkai (seperti RTP/VoIP via package `rtp`).
+
 
 | Flag | Default | Keterangan |
 |---|---|---|
