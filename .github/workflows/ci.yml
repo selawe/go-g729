@@ -34,6 +34,22 @@ jobs:
       - name: Build all packages and tools
         run: go build -v ./...
 
+      - name: Generate arch-specific golden files (ARM64 only, if not yet committed)
+        if: runner.arch == 'ARM64'
+        shell: bash
+        run: |
+          if [ ! -d testdata/golden/arm64 ]; then
+            go test -run TestGolden -update-golden .
+          fi
+
+      - name: Upload arm64 golden files as artifact
+        if: runner.arch == 'ARM64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-arm64-go${{ matrix.go }}
+          path: testdata/golden/arm64/
+          if-no-files-found: ignore
+
       - name: Run unit tests
         run: go test -v ./...
 
