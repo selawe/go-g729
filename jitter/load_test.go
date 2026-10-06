@@ -51,7 +51,7 @@ func TestJitterBufferRealWorldNetworkSimulation(t *testing.T) {
 	// Gap / Silence: 1.0s
 	// Talkspurt 3: seq 300..399 (marker = true on 300)
 
-	for p := 0; p < numPackets; p++ {
+	for p := range numPackets {
 		var seq uint16
 		var marker bool
 
@@ -71,7 +71,7 @@ func TestJitterBufferRealWorldNetworkSimulation(t *testing.T) {
 
 		// 2 frames per packet (20 ms)
 		payload := make([]byte, 20)
-		for sub := 0; sub < 2; sub++ {
+		for sub := range 2 {
 			// Synthetic harmonic audio tone
 			frameIdx := p*2 + sub
 			for i := range pcm {
@@ -186,12 +186,7 @@ func TestJitterBufferRealWorldNetworkSimulation(t *testing.T) {
 			}
 		}
 
-		// Verify PCM audio validity: no NaNs, no infinities, proper saturation bounds
-		for sIdx, sVal := range decodedPCM {
-			if sVal > 32767 || sVal < -32768 {
-				t.Fatalf("sample %d out of bounds: %d", sIdx, sVal)
-			}
-		}
+		// PCM is int16 so bounds are guaranteed by the type; just check decode succeeded.
 	}
 
 	stats := jb.Stats()
@@ -236,7 +231,7 @@ func TestJitterBufferHeavyLossDegradation(t *testing.T) {
 
 	// Push 50 packets with 30% loss rate
 	pushed := 0
-	for i := 0; i < total; i++ {
+	for i := range total {
 		seq := uint16(100 + i)
 		ts := uint32(i * 80)
 		if rng.Float64() < 0.30 {
@@ -299,7 +294,7 @@ func TestJitterBufferMultiStreamConcurrentLoad(t *testing.T) {
 	var totalPlayed atomic.Int64
 	var totalPLC atomic.Int64
 
-	for streamID := 0; streamID < numStreams; streamID++ {
+	for streamID := range numStreams {
 		wg.Add(1)
 		go func(sID int) {
 			defer wg.Done()
@@ -313,7 +308,7 @@ func TestJitterBufferMultiStreamConcurrentLoad(t *testing.T) {
 			rng := rand.New(rand.NewSource(int64(sID * 1000)))
 
 			// Producer loop
-			for p := 0; p < packetsPerStream; p++ {
+			for p := range packetsPerStream {
 				seq := uint16(p)
 				ts := uint32(p * 80)
 				// 5% loss

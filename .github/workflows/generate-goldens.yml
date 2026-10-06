@@ -1,0 +1,54 @@
+name: Generate ARM64 Golden Files
+
+on:
+  workflow_dispatch:
+    inputs:
+      go_version:
+        description: 'Go version to use'
+        required: false
+        default: '1.27'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate:
+    name: Generate golden files on ARM64
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          check-latest: true
+
+      - name: Generate ARM64 golden files
+        run: go test -run TestGolden -update-golden .
+
+      - name: Verify generated files
+        run: |
+          echo "Generated files:"
+          ls -lh testdata/golden/arm64/ || echo "No arm64 directory created"
+          go test -run TestGolden .
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'test(golden): add ARM64 golden files for macOS Apple Silicon'
+          branch: 'chore/golden-arm64'
+          delete-branch: true
+          title: 'test(golden): add ARM64 golden files'
+          body: |
+            Auto-generated ARM64 golden files from `macos-latest` (Apple Silicon) runner.
+
+            These files allow `TestGoldenEncoderG729A`, `TestGoldenEncoderFull`, and
+            `TestGoldenDecoderG729A` to run as regression tests on ARM64 instead of
+            being skipped.
+
+            Generated with Go ${{ inputs.go_version }} on `macos-latest`.
+          labels: 'test,automated'
