@@ -267,7 +267,7 @@ func TestSynthesisResidueInverse(t *testing.T) {
 	Residue(residual, orig, a[:], nil, false)
 	SynthesisFilter(reconstructed, residual, a[:], nil, false)
 
-	for i := 0; i < params.L_SUBFR; i++ {
+	for i := range params.L_SUBFR {
 		diff := math.Abs(float64(orig[i] - reconstructed[i]))
 		if diff > 5e-4 {
 			t.Fatalf("subframe sample %d mismatch: orig=%f, recon=%f, diff=%e", i, orig[i], reconstructed[i], diff)
@@ -280,7 +280,7 @@ func TestSynthesisResidueInverse(t *testing.T) {
 	var synMem [params.M]float32
 
 
-	for sf := 0; sf < numSubfr; sf++ {
+	for sf := range numSubfr {
 		sfOrig := make([]float32, params.L_SUBFR)
 		for i := range sfOrig {
 			sfOrig[i] = (rng.Float32() - 0.5) * 4000.0
@@ -291,7 +291,7 @@ func TestSynthesisResidueInverse(t *testing.T) {
 		Residue(sfRes, sfOrig, a[:], resMem[:], true)
 		SynthesisFilter(sfRecon, sfRes, a[:], synMem[:], true)
 
-		for i := 0; i < params.L_SUBFR; i++ {
+		for i := range params.L_SUBFR {
 			diff := math.Abs(float64(sfOrig[i] - sfRecon[i]))
 			if diff > 1e-3 {
 				t.Fatalf("sf %d sample %d mismatch: orig=%f, recon=%f, diff=%e", sf, i, sfOrig[i], sfRecon[i], diff)
@@ -314,7 +314,7 @@ func TestConvolution(t *testing.T) {
 	out := make([]float32, params.L_SUBFR)
 	Convolution(out, h, x)
 
-	for i := 0; i < params.L_SUBFR; i++ {
+	for i := range params.L_SUBFR {
 		if math.Abs(float64(out[i]-h[i])) > 1e-6 {
 			t.Errorf("impulse response mismatch at %d: expected %f, got %f", i, h[i], out[i])
 		}
@@ -329,7 +329,7 @@ func TestConvolution(t *testing.T) {
 
 	Convolution(out, h, x)
 
-	for n := 0; n < params.L_SUBFR; n++ {
+	for n := range params.L_SUBFR {
 		var expected float32
 		for i := 0; i <= n; i++ {
 			expected += x[i] * h[n-i]
@@ -361,11 +361,16 @@ func TestAutocorr(t *testing.T) {
 	rLag := make([]float32, params.M+1)
 	Autocorr(rLag, speech, nil, params.M)
 
-	// Verify lag window was applied correctly: rLag[k] == rRaw[k] * LagWindow[k]
+	// Verify lag window was applied correctly: rLag[k] == rRaw[k] * LagWindow[k].
+	// Use relative tolerance: float32 ULP at scale ~8M is ~1.0, so 1e-4 absolute
+	// is far too tight. Allow 10 ppm (1e-5) relative error.
 	for k := 0; k <= params.M; k++ {
 		expected := rRaw[k] * tables.LagWindow[k]
-		if math.Abs(float64(rLag[k]-expected)) > 1e-4 {
-			t.Errorf("lag window mismatch at k=%d: expected %f, got %f", k, expected, rLag[k])
+		diff := math.Abs(float64(rLag[k] - expected))
+		tol := math.Max(1e-3, math.Abs(float64(expected))*1e-5)
+		if diff > tol {
+			t.Errorf("lag window mismatch at k=%d: expected %.7g, got %.7g (diff %.3g, tol %.3g)",
+				k, expected, rLag[k], diff, tol)
 		}
 	}
 }
@@ -378,7 +383,7 @@ func TestDSPConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for g := 0; g < goroutines; g++ {
+	for g := range goroutines {
 		go func(seed int64) {
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(seed))
@@ -391,7 +396,7 @@ func TestDSPConcurrency(t *testing.T) {
 			h := make([]float32, params.L_SUBFR)
 			var mem [params.M]float32
 
-			for it := 0; it < iterations; it++ {
+			for range iterations {
 				for i := range speech {
 					speech[i] = (rng.Float32() - 0.5) * 500.0
 				}
@@ -426,7 +431,7 @@ func BenchmarkHighPassFilter(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		HighPassFilter(sig, &state)
 	}
 }
@@ -440,7 +445,7 @@ func BenchmarkAutocorr(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		Autocorr(r[:], speech, nil, params.M)
 	}
 }
@@ -450,7 +455,7 @@ func BenchmarkLevinson(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _, _ = Levinson(r[:], params.M)
 	}
 }
@@ -463,7 +468,7 @@ func BenchmarkSynthesisFilter(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		SynthesisFilter(out, x, a[:], mem[:], true)
 	}
 }
@@ -476,7 +481,7 @@ func BenchmarkResidue(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		Residue(out, x, a[:], mem[:], true)
 	}
 }
@@ -488,7 +493,7 @@ func BenchmarkConvolution(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		Convolution(out, h, x)
 	}
 }
