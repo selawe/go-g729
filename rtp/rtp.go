@@ -215,6 +215,7 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 		copy(frame, payload)
 		return [][]byte{frame}, PayloadInfo{
 			Type:       FrameSID,
+			NumFrames:  1,
 			DurationMs: FrameDurationMs,
 			HasSID:     true,
 		}, nil
@@ -246,7 +247,7 @@ func Unpack(payload []byte) ([][]byte, PayloadInfo, error) {
 				ErrInvalidPayload, nTotal, MaxFramesPerPacket)
 		}
 		frames := make([][]byte, nTotal)
-		for i := 0; i < nSpeech; i++ {
+		for i := range nSpeech {
 			frame := make([]byte, FrameBytes)
 			copy(frame, payload[i*FrameBytes:(i+1)*FrameBytes])
 			frames[i] = frame
@@ -311,14 +312,14 @@ func UnpackInto(dst [][]byte, payload []byte) (int, PayloadInfo, error) {
 		} else {
 			dst[0] = payload[:SIDBytes]
 		}
-		return 1, PayloadInfo{Type: FrameSID, DurationMs: FrameDurationMs, HasSID: true}, nil
+		return 1, PayloadInfo{Type: FrameSID, NumFrames: 1, DurationMs: FrameDurationMs, HasSID: true}, nil
 
 	case rem == 0:
 		n := len(payload) / FrameBytes
 		if len(dst) < n {
 			return 0, PayloadInfo{}, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), n)
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			sub := payload[i*FrameBytes : (i+1)*FrameBytes]
 			if cap(dst[i]) >= FrameBytes {
 				dst[i] = dst[i][:FrameBytes]
@@ -339,7 +340,7 @@ func UnpackInto(dst [][]byte, payload []byte) (int, PayloadInfo, error) {
 		if len(dst) < nTotal {
 			return 0, PayloadInfo{}, fmt.Errorf("%w: dst length %d < %d", ErrBufferTooSmall, len(dst), nTotal)
 		}
-		for i := 0; i < nSpeech; i++ {
+		for i := range nSpeech {
 			sub := payload[i*FrameBytes : (i+1)*FrameBytes]
 			if cap(dst[i]) >= FrameBytes {
 				dst[i] = dst[i][:FrameBytes]
