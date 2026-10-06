@@ -45,6 +45,10 @@ var ErrIncompleteFrame = errors.New("g729: stream closed with incomplete trailin
 // (Config.EnableVAD must be false). For Annex B VAD/DTX streams, use the
 // rtp package, which correctly handles variable-length SID and suppressed frames.
 //
+// Thread safety: Writer is NOT safe for concurrent use. Write, Close, and
+// SetFlushMode must all be called from a single goroutine. Only SetContext
+// is safe to call concurrently with Write.
+//
 // Context cancellation: call SetContext to attach a context. When set, Write
 // checks ctx.Err() once per 10 ms frame boundary; cancellation is detected
 // within one frame (~42 µs worst case). By default no context is attached and
@@ -90,10 +94,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 	// 1. If buffer has residual bytes, complete the block first
 	if w.bufLen > 0 {
 		needed := 160 - w.bufLen
-		toCopy := len(src)
-		if toCopy > needed {
-			toCopy = needed
-		}
+		toCopy := min(len(src), needed)
 		copy(w.buf[w.bufLen:], src[:toCopy])
 		w.bufLen += toCopy
 		src = src[toCopy:]
@@ -131,7 +132,7 @@ func (w *Writer) encodeAndWrite(block []byte) error {
 	}
 
 	var samples [80]int16
-	for i := 0; i < 80; i++ {
+	for i := range 80 {
 		samples[i] = int16(binary.LittleEndian.Uint16(block[i*2 : (i+1)*2]))
 	}
 
@@ -209,6 +210,10 @@ func (w *Writer) Close() error {
 // frame is exactly 10 bytes. It is designed to consume streams produced by
 // Writer (with EnableVAD=false). Annex B bitstreams containing 2-byte SID
 // frames or suppressed frames will be misparsed; use the rtp package instead.
+//
+// Thread safety: Reader is NOT safe for concurrent use. Read and Close must
+// be called from a single goroutine. Only SetContext is safe to call
+// concurrently with Read.
 //
 // Context cancellation: call SetContext to attach a context. When set, Read
 // checks ctx.Err() once per 10 ms frame boundary; cancellation is detected
@@ -343,7 +348,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		}
 
 		// Serialize int16 samples to little-endian bytes in r.buf
-		for i := 0; i < 80; i++ {
+		for i := range 80 {
 			binary.LittleEndian.PutUint16(r.buf[i*2:(i+1)*2], uint16(r.pcm[i]))
 		}
 		r.bufHead = 0

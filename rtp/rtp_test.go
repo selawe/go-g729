@@ -79,7 +79,7 @@ func TestPackUnpackSID(t *testing.T) {
 
 	// Feed silence until DTX kicks in and produces a SID frame
 	var sidFrame []byte
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		n, ft, err := enc.Encode(dst, silence)
 		if err != nil {
 			t.Fatalf("encode: %v", err)
@@ -412,7 +412,7 @@ func BenchmarkUnpackInto(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = rtp.UnpackInto(dst, payload)
 	}
 }
@@ -490,7 +490,7 @@ func BenchmarkPackInto(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _ = rtp.PackInto(dst, frames)
 	}
 }

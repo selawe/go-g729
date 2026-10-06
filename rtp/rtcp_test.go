@@ -1,6 +1,7 @@
 package rtp_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ func TestRTCPTracker_Nominal(t *testing.T) {
 	start := time.Now()
 
 	// 50 packets @ 20 ms spacing (160 samples timestamp delta)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		seq := uint16(100 + i)
 		ts := uint32(1000 + i*160)
 		arrival := start.Add(time.Duration(i*20) * time.Millisecond)
@@ -120,5 +121,59 @@ func TestRTCPTracker_JitterCalculation(t *testing.T) {
 	}
 	if report.JitterDuration() != 15*time.Second/8000 {
 		t.Errorf("JitterDuration = %v, want %v", report.JitterDuration(), 15*time.Second/8000)
+	}
+}
+
+// TestRTCPTracker_NoOverflow verifies that RecordPacket does not overflow int64
+// when called with real wall-clock timestamps (UnixNano ~ 1.76e18 in 2026,
+// which would overflow if multiplied by ClockRate=8000 before dividing).
+func TestRTCPTracker_NoOverflow(t *testing.T) {
+	tracker := rtp.NewRTCPTracker(0x4444)
+	now := time.Now()
+
+	// Two packets 20 ms apart — jitter should be 0 on perfectly uniform arrival.
+	tracker.RecordPacket(1, 1000, now)
+	tracker.RecordPacket(2, 1160, now.Add(20*time.Millisecond))
+
+	report := tracker.GenerateReport()
+	if report.InterarrivalJitter != 0 {
+		t.Errorf("InterarrivalJitter = %d with uniform arrival, want 0 (possible overflow in transit calc)",
+			report.InterarrivalJitter)
+	}
+	if report.PacketsReceived != 2 {
+		t.Errorf("PacketsReceived = %d, want 2", report.PacketsReceived)
+	}
+}
+
+// TestRTCPTracker_Concurrent verifies that RecordPacket and GenerateReport are
+// safe for concurrent use from separate goroutines (network ingress vs RTCP scheduler).
+// Run with -race to detect data races.
+func TestRTCPTracker_Concurrent(t *testing.T) {
+	tracker := rtp.NewRTCPTracker(0x5555)
+	now := time.Now()
+
+	const n = 200
+	var wg sync.WaitGroup
+
+	// Writer goroutine: records packets continuously.
+	wg.Go(func() {
+		for i := range n {
+			tracker.RecordPacket(uint16(i), uint32(i*160), now.Add(time.Duration(i*20)*time.Millisecond))
+		}
+	})
+
+	// Reader goroutine: generates reports while packets are being recorded.
+	wg.Go(func() {
+		for range 10 {
+			_ = tracker.GenerateReport()
+			time.Sleep(time.Millisecond)
+		}
+	})
+
+	wg.Wait()
+
+	report := tracker.GenerateReport()
+	if report.PacketsReceived == 0 {
+		t.Error("no packets recorded after concurrent run")
 	}
 }

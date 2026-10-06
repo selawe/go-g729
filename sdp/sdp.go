@@ -190,7 +190,7 @@ func ParseFMTPParams(fmtp string) (annexa bool, annexb bool, err error) {
 		return annexa, annexb, nil
 	}
 
-	for _, param := range strings.Split(fmtp, ";") {
+	for param := range strings.SplitSeq(fmtp, ";") {
 		param = strings.TrimSpace(param)
 		if param == "" {
 			continue

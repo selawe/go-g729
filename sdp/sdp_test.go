@@ -306,7 +306,7 @@ func TestSDPEncoderIntegration(t *testing.T) {
 	// annexb=no → only speech frames, even during silence
 	cfgNO, _ := sdp.ConfigFromFMTP("annexb=no")
 	encNO := g729.NewEncoder(cfgNO)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		n, ft, err := encNO.Encode(dst, silence)
 		if err != nil {
 			t.Fatalf("no-annexb frame %d: %v", i, err)
