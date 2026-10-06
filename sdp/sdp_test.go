@@ -33,7 +33,10 @@ func TestRTPMapLine(t *testing.T) {
 
 func TestMediaSection(t *testing.T) {
 	cfg := g729.Config{EnableVAD: true}
-	section := sdp.MediaSection(8000, 18, cfg)
+	section, err := sdp.MediaSection(8000, 18, cfg)
+	if err != nil {
+		t.Fatalf("MediaSection error: %v", err)
+	}
 	lines := strings.Split(section, "\r\n")
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines, got %d: %q", len(lines), section)
@@ -46,6 +49,22 @@ func TestMediaSection(t *testing.T) {
 	}
 	if lines[2] != "a=fmtp:18 annexb=yes" {
 		t.Errorf("line 2: %q", lines[2])
+	}
+}
+
+func TestMediaSectionInvalidInputs(t *testing.T) {
+	cfg := g729.Config{}
+	if _, err := sdp.MediaSection(0, 18, cfg); err == nil {
+		t.Error("expected error for port=0")
+	}
+	if _, err := sdp.MediaSection(65536, 18, cfg); err == nil {
+		t.Error("expected error for port=65536")
+	}
+	if _, err := sdp.MediaSection(8000, -1, cfg); err == nil {
+		t.Error("expected error for payloadType=-1")
+	}
+	if _, err := sdp.MediaSection(8000, 128, cfg); err == nil {
+		t.Error("expected error for payloadType=128")
 	}
 }
 

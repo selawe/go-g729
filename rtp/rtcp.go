@@ -2,6 +2,7 @@ package rtp
 
 import (
 	"math"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,9 @@ type ReceptionReport struct {
 
 	// CumulativeLost is the total number of RTP data packets from source SSRC that have
 	// been lost since the beginning of reception.
+	// NOTE: RFC 3550 §6.4.1 defines this field as 24-bit signed in the on-wire RTCP
+	// packet. When serialising into a real RTCP RR, callers must clamp this to 0x7FFFFF
+	// (8 388 607) and handle the 24-bit signed encoding.
 	CumulativeLost uint32
 
 	// ExtendedHighestSeq is the extended highest sequence number received,
@@ -100,7 +104,12 @@ func (r *ReceptionReport) EstimatedMOS(oneWayDelay time.Duration) float64 {
 
 // RTCPTracker computes real-time RFC 3550 §6.4.1 reception statistics and interarrival jitter
 // for an incoming G.729 RTP stream.
+//
+// RTCPTracker is safe for concurrent use: RecordPacket and GenerateReport may be
+// called from different goroutines (e.g. network ingress and RTCP scheduler).
 type RTCPTracker struct {
+	mu sync.Mutex
+
 	ssrc uint32
 
 	initialized bool
@@ -113,7 +122,7 @@ type RTCPTracker struct {
 	priorReceived uint32
 
 	// RFC 3550 Interarrival Jitter state
-	jitter float64 // in timestamp units (1/8000 s)
+	jitter      float64 // in timestamp units (1/8000 s)
 	lastTransit int64
 }
 
@@ -126,10 +135,14 @@ func NewRTCPTracker(ssrc uint32) *RTCPTracker {
 
 // RecordPacket records the arrival of an RTP packet with sequence number seq,
 // RTP timestamp ts, and local arrival time arrival.
+// Safe for concurrent use with GenerateReport and Reset.
 func (t *RTCPTracker) RecordPacket(seq uint16, ts uint32, arrival time.Time) {
-	// Convert arrival time to RTP timestamp clock units (8000 Hz)
-	// Using nanoseconds: tsUnits = (arrivalNs * 8000) / 1e9
-	arrivalUnits := arrival.UnixNano() * ClockRate / 1e9
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// Convert arrival time to RTP timestamp clock units (8000 Hz).
+	// Divide first to avoid int64 overflow: at 8 kHz, 1 sample = 125_000 ns.
+	// arrival.UnixNano() ~ 1.76e18 in 2026; multiplying by 8000 first would overflow.
+	arrivalUnits := arrival.UnixNano() / (1_000_000_000 / ClockRate)
 
 	if !t.initialized {
 		t.baseSeq = seq
@@ -168,7 +181,10 @@ func (t *RTCPTracker) RecordPacket(seq uint16, ts uint32, arrival time.Time) {
 
 // GenerateReport produces an RFC 3550 ReceptionReport reflecting packets received
 // since the tracker started or since the last interval reset.
+// Safe for concurrent use with RecordPacket and Reset.
 func (t *RTCPTracker) GenerateReport() ReceptionReport {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if !t.initialized {
 		return ReceptionReport{SSRC: t.ssrc}
 	}
@@ -187,11 +203,8 @@ func (t *RTCPTracker) GenerateReport() ReceptionReport {
 
 	var fractionLost uint8
 	if expectedInterval > 0 && expectedInterval > receivedInterval {
-		lostInterval := expectedInterval - receivedInterval
-		frac := (lostInterval << 8) / expectedInterval
-		if frac > 255 {
-			frac = 255
-		}
+		lostInterval := uint64(expectedInterval - receivedInterval)
+		frac := min((lostInterval<<8)/uint64(expectedInterval), 255)
 		fractionLost = uint8(frac)
 	}
 
@@ -212,7 +225,10 @@ func (t *RTCPTracker) GenerateReport() ReceptionReport {
 }
 
 // Reset clears the tracker to its uninitialized state.
+// Safe for concurrent use.
 func (t *RTCPTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.initialized = false
 	t.baseSeq = 0
 	t.maxSeq = 0

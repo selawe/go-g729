@@ -122,18 +122,32 @@ func FMTPLine(payloadType int, cfg g729.Config) string {
 	return fmt.Sprintf("a=fmtp:%d annexb=%s", payloadType, annexb)
 }
 
+// ErrInvalidPort is returned when the UDP port number is out of the valid range [1, 65535].
+var ErrInvalidPort = errors.New("sdp: port must be in range [1, 65535]")
+
+// ErrInvalidPayloadType is returned when the RTP payload type is out of the valid range [0, 127].
+var ErrInvalidPayloadType = errors.New("sdp: payload type must be in range [0, 127]")
+
 // MediaSection returns the minimal SDP media section for G.729 as a
-// newline-joined string, ready to embed in an SDP body.
+// CRLF-joined string, ready to embed in an SDP body.
 //
 //	m=audio <port> RTP/AVP <payloadType>
 //	a=rtpmap:<payloadType> G729/8000
 //	a=fmtp:<payloadType> annexb=yes|no
-func MediaSection(port, payloadType int, cfg g729.Config) string {
+//
+// Returns an error if port is not in [1, 65535] or payloadType is not in [0, 127].
+func MediaSection(port, payloadType int, cfg g729.Config) (string, error) {
+	if port < 1 || port > 65535 {
+		return "", fmt.Errorf("%w: got %d", ErrInvalidPort, port)
+	}
+	if payloadType < 0 || payloadType > 127 {
+		return "", fmt.Errorf("%w: got %d", ErrInvalidPayloadType, payloadType)
+	}
 	return strings.Join([]string{
 		fmt.Sprintf("m=audio %d RTP/AVP %d", port, payloadType),
 		RTPMapLine(payloadType),
 		FMTPLine(payloadType, cfg),
-	}, "\r\n")
+	}, "\r\n"), nil
 }
 
 // ParseFMTP parses a G.729 fmtp attribute value string (the part after
