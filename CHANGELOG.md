@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.3.0] — 2026-10-06
+
+### Breaking Changes
+
+- **`jitter.Buffer.Push` signature updated to accept RTP Marker bit (`marker bool`)**:
+  Per RFC 3550 §5.1 dan RFC 3551 §4.5.6, parameter `marker bool` ditambahkan ke `b.Push(seq, ts, marker, payload)` untuk menandai paket awal dari talkspurt baru setelah periode hening (DTX silence). Pemanggil method ini perlu menambahkan argumen boolean `marker` (set `true` bila bit M pada RTP header aktif, atau `false` untuk paket berikutnya).
+
+### Added
+
+- **RTP Marker Bit Talkspurt Resynchronization (`jitter.Buffer`)**:
+  Saat `marker=true`, jitter buffer secara otomatis me-resync `playoutSeq`, membersihkan slot lama dari talkspurt sebelumnya, me-reset `bufferedCount`, dan memulai fase pre-buffering baru. Mencegah packet rejection palsu (*false LatePackets*) dan semburan frame PLC palsu saat transisi dari hening ke bicara.
+- **Canonical ITU-T Test Vectors committed (`testdata/itu/`)**:
+  Vektor kanonikal ITU-T (`TEST.IN`, `TEST.BIT`, `TEST.pst` — total 85 KB) kini diikutsertakan dalam repositori. Conformance test di CI workflow (`TestDecoderOfficialTestVector` & `TestEncoderConformance`) kini berstatus **PASS** secara otomatis di semua runner tanpa perlu download manual.
+- **ARM64 Golden Regression Files (`testdata/golden/arm64/`)**:
+  Golden files khusus arsitektur ARM64 (`g729a_encoder.bit`, `g729_full_encoder.bit`, `g729a_decoder.pcm`) telah di-commit ke repositori. CI workflow kini memberlakukan proteksi regresi ketat (*strict bit-exact check*) pada Apple Silicon / ARM64 tanpa re-generasi otomatis.
+- **WAN Network Load & Stress Tests (`jitter/load_test.go`)**:
+  Suite pengujian beban jaringan realistis mencakup simulasi WAN dengan random loss (5%), burst loss (5%), network jitter & packet reordering (0–35 ms), packet duplication (2%), degradasi ekstrem (loss 30% dengan progressive muting), serta stress-test konkurensi 50 stream VoIP simultan.
+
+### Fixed
+
+- **RTCP Interarrival Jitter 32-bit Timestamp Wrap-Around (`rtp.RTCPTracker`)**:
+  Perhitungan transit time sebelumnya menggunakan aritmatika `int64` yang menyebabkan lonjakan jitter fiktif sebesar $\approx 4{,}3 \times 10^9$ sampel setiap kali timestamp RTP 32-bit membungkus (setiap ~6.2 hari pada clock 8000 Hz). Diperbaiki dengan modular arithmetic 32-bit `uint32` $\to$ `int32(arrivalTS32 - ts)` sesuai spesifikasi resmi RFC 3550 Appendix A.8.
+- **Jitter Buffer: Deadlock & False Packet Rejections Pasca Periode Hening DTX**:
+  Jeda hening lebih dari `maxSlots` (misal >200 ms) sebelumnya menyebabkan paket baru masa depan salah diidentifikasi sebagai paket terlambat (*LatePackets*) dan dibuang permanen. Kini ditangani dengan benar via sinkronisasi Marker Bit dan reset slot.
+
+---
+
 ## [v0.2.1] — 2026-10-03
 
 ### Added
