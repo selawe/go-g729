@@ -10,7 +10,7 @@ import (
 //
 // Invariants:
 //   - Must never panic regardless of input.
-//   - Valid lengths (0, 2, n×10 where n ≤ MaxFramesPerPacket) must not return an error.
+//   - Valid lengths (0, 2, n×10 where n ≤ MaxFramesPerPacket, and n×10+2 where n≥1 and n+1 ≤ MaxFramesPerPacket) must not return an error.
 //   - Any other length must return ErrInvalidPayload.
 //
 // Run: go test -fuzz=FuzzUnpack -fuzztime=2m ./rtp/
@@ -26,6 +26,8 @@ func FuzzUnpack(f *testing.F) {
 	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF})
 	// Seed: two frames
 	f.Add(make([]byte, 20))
+	// Seed: mixed transition packet — 1 speech + 1 SID (RFC 3551 §4.5.6)
+	f.Add(make([]byte, 12))
 	// Seed: max allowed frames
 	f.Add(make([]byte, rtp.MaxFramesPerPacket*rtp.FrameBytes))
 	// Seed: one frame over the limit — must be rejected
@@ -67,6 +69,20 @@ func FuzzUnpack(f *testing.F) {
 			want := n / rtp.FrameBytes
 			if len(frames) != want {
 				t.Errorf("len=%d: expected %d frames, got %d", n, want, len(frames))
+			}
+
+		case n%rtp.FrameBytes == rtp.SIDBytes && n > rtp.SIDBytes &&
+			(n/rtp.FrameBytes+1) <= rtp.MaxFramesPerPacket:
+			// RFC 3551 §4.5.6 transition packet: N speech frames followed by 1 SID frame.
+			if err != nil {
+				t.Errorf("len=%d (mixed packet): expected nil error, got %v", n, err)
+			}
+			if info.Type != rtp.FrameMixed {
+				t.Errorf("len=%d: expected FrameMixed, got %v", n, info.Type)
+			}
+			want := n/rtp.FrameBytes + 1
+			if len(frames) != want {
+				t.Errorf("len=%d: expected %d frames (mixed), got %d", n, want, len(frames))
 			}
 
 		default:
