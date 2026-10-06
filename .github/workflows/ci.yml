@@ -41,8 +41,8 @@ jobs:
         if: runner.os == 'Linux'
         run: go test -race -v ./...
 
-      - name: Verify ITU-T Conformance Vector (TEST.pst)
-        run: go test -v -run TestDecoderOfficialTestVector .
+      - name: Verify ITU-T Conformance Vectors (TEST.pst & TEST.IN)
+        run: go test -v -run "TestDecoderOfficialTestVector|TestEncoderConformance" .
 
       - name: Run RTF Benchmark Smoke Test
         run: go test -run=^$ -bench=BenchmarkRTF -benchtime=100ms .
