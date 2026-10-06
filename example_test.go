@@ -126,8 +126,8 @@ func Example_jitterBuffer() {
 
 	// Simulate incoming RTP packets (10-byte payload each)
 	payload := make([]byte, 10)
-	_ = jb.Push(100, 0, payload)
-	_ = jb.Push(101, 80, payload)
+	_ = jb.Push(100, 0, false, payload)
+	_ = jb.Push(101, 80, false, payload)
 
 	var frame [10]byte
 	n, isLoss, ok := jb.PopInto(frame[:])

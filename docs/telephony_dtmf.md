@@ -106,6 +106,7 @@ In your media gateway, softswitch, or WebRTC server, inspect the RTP header `Pay
 package main
 
 import (
+	"encoding/binary"
 	"log"
 
 	g729 "github.com/selawe/go-g729"
@@ -124,19 +125,23 @@ func (s *MediaSession) HandleIncomingRTP(packet []byte) {
 		return // Truncated RTP header
 	}
 
+	// Parse RTP header fields (RFC 3550 §5.1).
+	marker := (packet[1] & 0x80) != 0
 	payloadType := packet[1] & 0x7F
+	seq := binary.BigEndian.Uint16(packet[2:4])
+	ts := binary.BigEndian.Uint32(packet[4:8])
+	payload := packet[12:]
 
 	switch payloadType {
 	case sdp.DefaultPayloadType: // 18: G.729 speech
-		// Forward to jitter buffer and decoder
-		if err := s.jb.Push(packet); err != nil {
+		// Forward to jitter buffer; pass marker bit for talkspurt resync.
+		if err := s.jb.Push(seq, ts, marker, payload); err != nil {
 			log.Printf("jitter push error: %v", err)
 		}
 
 	case sdp.DefaultTelephoneEventPayloadType: // 101: RFC 4733 DTMF
 		// DO NOT feed this payload into g729.Decoder!
 		// Parse RFC 4733 telephone-event structure:
-		payload := packet[12:]
 		if len(payload) >= 4 {
 			eventID := payload[0]
 			endBit := (payload[1] & 0x80) != 0

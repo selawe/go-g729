@@ -124,6 +124,29 @@ func TestRTCPTracker_JitterCalculation(t *testing.T) {
 	}
 }
 
+// TestRTCPTracker_TimestampWrap verifies that interarrival jitter remains near-zero
+// after a 32-bit RTP timestamp wraparound (~6.2 days at 8000 Hz).
+// With int64 transit arithmetic the wrap causes a ~4.3 billion sample spike;
+// with uint32→int32 modular arithmetic it rounds to zero.
+func TestRTCPTracker_TimestampWrap(t *testing.T) {
+	tracker := rtp.NewRTCPTracker(0x9999)
+	now := time.Now()
+
+	// Packet near rollover: ts just before 0xFFFFFFFF
+	tsA := uint32(0xFFFFFF00)
+	tracker.RecordPacket(1, tsA, now)
+
+	// Next packet: ts rolls over (160 units = 20 ms @ 8000 Hz)
+	tsB := tsA + 160 // wraps to 0x0000005F
+	tracker.RecordPacket(2, tsB, now.Add(20*time.Millisecond))
+
+	report := tracker.GenerateReport()
+	if report.InterarrivalJitter != 0 {
+		t.Errorf("InterarrivalJitter = %d after 32-bit wrap, want 0 (uniform delivery)",
+			report.InterarrivalJitter)
+	}
+}
+
 // TestRTCPTracker_NoOverflow verifies that RecordPacket does not overflow int64
 // when called with real wall-clock timestamps (UnixNano ~ 1.76e18 in 2026,
 // which would overflow if multiplied by ClockRate=8000 before dividing).

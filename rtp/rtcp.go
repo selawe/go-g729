@@ -123,7 +123,7 @@ type RTCPTracker struct {
 
 	// RFC 3550 Interarrival Jitter state
 	jitter      float64 // in timestamp units (1/8000 s)
-	lastTransit int64
+	lastTransit int32   // int32 so 32-bit RTP timestamp wraparound is handled correctly
 }
 
 // NewRTCPTracker creates a new RTCPTracker for the given SSRC.
@@ -139,17 +139,20 @@ func NewRTCPTracker(ssrc uint32) *RTCPTracker {
 func (t *RTCPTracker) RecordPacket(seq uint16, ts uint32, arrival time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	// Convert arrival time to RTP timestamp clock units (8000 Hz).
-	// Divide first to avoid int64 overflow: at 8 kHz, 1 sample = 125_000 ns.
-	// arrival.UnixNano() ~ 1.76e18 in 2026; multiplying by 8000 first would overflow.
-	arrivalUnits := arrival.UnixNano() / (1_000_000_000 / ClockRate)
+
+	// Truncate arrival time to a 32-bit RTP clock domain (8000 Hz, same domain
+	// as the sender's RTP timestamp). Using uint32 means both operands in the
+	// transit calculation share the same modular arithmetic, so 32-bit wraparound
+	// every ~6.2 days of continuous streaming is handled transparently.
+	// Divide before truncating to avoid int64 overflow (1 sample = 125_000 ns).
+	arrivalTS32 := uint32(arrival.UnixNano() / (1_000_000_000 / ClockRate))
 
 	if !t.initialized {
 		t.baseSeq = seq
 		t.maxSeq = seq
 		t.cycles = 0
 		t.received = 1
-		t.lastTransit = arrivalUnits - int64(ts)
+		t.lastTransit = int32(arrivalTS32 - ts)
 		t.jitter = 0.0
 		t.initialized = true
 		return
@@ -166,16 +169,17 @@ func (t *RTCPTracker) RecordPacket(seq uint16, ts uint32, arrival time.Time) {
 	}
 	t.received++
 
-	// 2. RFC 3550 §6.4.1 Interarrival Jitter calculation:
-	// D(i-1, i) = (R_i - S_i) - (R_{i-1} - S_{i-1})
-	transit := arrivalUnits - int64(ts)
+	// 2. RFC 3550 §6.4.1 Interarrival Jitter:
+	// transit = R_i - S_i (unsigned 32-bit subtraction → cast to signed int32).
+	// D(i-1,i) = transit_i - transit_{i-1}; |D| drives the EWMA filter.
+	transit := int32(arrivalTS32 - ts)
 	d := transit - t.lastTransit
 	t.lastTransit = transit
 	if d < 0 {
 		d = -d
 	}
 
-	// J = J + (|D| - J) / 16.0
+	// J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16
 	t.jitter += (float64(d) - t.jitter) / 16.0
 }
 

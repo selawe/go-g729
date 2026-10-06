@@ -275,7 +275,7 @@ jb := jitter.New(jitter.Config{
 })
 
 // Di goroutine receiver RTP (penerima socket UDP):
-err := jb.Push(rtpSeq, rtpTimestamp, rtpPayload)
+err := jb.Push(rtpSeq, rtpTimestamp, rtpMarker, rtpPayload)
 
 // Di goroutine playout timer (tick 10 ms):
 var frameBuf [10]byte

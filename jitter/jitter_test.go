@@ -14,9 +14,9 @@ func TestJitterBufferInOrder(t *testing.T) {
 	})
 
 	// Push 10 packets (1 frame per packet)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		payload := []byte{byte(i + 1), 2, 3, 4, 5, 6, 7, 8, 9, 10}
-		err := jb.Push(uint16(100+i), uint32(i*80), payload)
+		err := jb.Push(uint16(100+i), uint32(i*80), false, payload)
 		if err != nil {
 			t.Fatalf("Push %d: %v", i, err)
 		}
@@ -51,7 +51,7 @@ func TestJitterBufferReordering(t *testing.T) {
 	seqs := []uint16{102, 100, 101, 104, 103}
 	for _, s := range seqs {
 		payload := []byte{byte(s), 0, 0, 0, 0, 0, 0, 0, 0, 0}
-		if err := jb.Push(s, uint32(s)*80, payload); err != nil {
+		if err := jb.Push(s, uint32(s)*80, false, payload); err != nil {
 			t.Fatalf("Push %d: %v", s, err)
 		}
 	}
@@ -74,10 +74,10 @@ func TestJitterBufferLossConcealment(t *testing.T) {
 	})
 
 	// Push packets with a gap: seq 10, 11, [12 missing], 13, 14
-	jb.Push(10, 800, make([]byte, 10))
-	jb.Push(11, 880, make([]byte, 10))
-	jb.Push(13, 1040, make([]byte, 10))
-	jb.Push(14, 1120, make([]byte, 10))
+	jb.Push(10, 800, false, make([]byte, 10))
+	jb.Push(11, 880, false, make([]byte, 10))
+	jb.Push(13, 1040, false, make([]byte, 10))
+	jb.Push(14, 1120, false, make([]byte, 10))
 
 	// Frame 10: good
 	f10, ok := jb.Pop()
@@ -119,7 +119,7 @@ func TestJitterBufferWrapAround(t *testing.T) {
 	seqs := []uint16{65534, 65535, 0, 1}
 	for _, s := range seqs {
 		payload := []byte{byte(s & 0xFF), 0, 0, 0, 0, 0, 0, 0, 0, 0}
-		if err := jb.Push(s, 0, payload); err != nil {
+		if err := jb.Push(s, 0, false, payload); err != nil {
 			t.Fatalf("Push %d: %v", s, err)
 		}
 	}
@@ -140,7 +140,7 @@ func TestJitterBufferMultiFramePacket(t *testing.T) {
 	payload[0] = 0xAA
 	payload[10] = 0xBB
 
-	if err := jb.Push(50, 4000, payload); err != nil {
+	if err := jb.Push(50, 4000, false, payload); err != nil {
 		t.Fatalf("Push 20ms: %v", err)
 	}
 
@@ -160,18 +160,18 @@ func TestJitterBufferConsecutiveMultiFramePackets(t *testing.T) {
 
 	// Push 5 consecutive 20-ms packets (2 frames each = 10 frames total)
 	// per RFC 3550 §5.1, sequence numbers increment by 1 per packet (100, 101, 102, 103, 104)
-	for p := 0; p < 5; p++ {
+	for p := range 5 {
 		payload := make([]byte, 20)
 		payload[0] = byte(p*2 + 1)
 		payload[10] = byte(p*2 + 2)
 		seq := uint16(100 + p)
 		ts := uint32(p * 160)
-		if err := jb.Push(seq, ts, payload); err != nil {
+		if err := jb.Push(seq, ts, false, payload); err != nil {
 			t.Fatalf("Push %d: %v", p, err)
 		}
 	}
 
-	for f := 0; f < 10; f++ {
+	for f := range 10 {
 		frame, ok := jb.Pop()
 		if !ok || frame == nil {
 			t.Fatalf("frame %d: ok=%v frame=%v", f, ok, frame)
@@ -200,24 +200,20 @@ func TestJitterBufferConcurrency(t *testing.T) {
 	producerDone := make(chan struct{})
 
 	// Producer goroutine
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer close(producerDone)
-		for i := 0; i < totalPackets; i++ {
+		for i := range totalPackets {
 			p := make([]byte, 10)
 			p[0] = byte(i)
-			_ = jb.Push(uint16(i), uint32(i*80), p)
+			_ = jb.Push(uint16(i), uint32(i*80), false, p)
 			time.Sleep(100 * time.Microsecond)
 		}
-	}()
+	})
 
 	// Consumer goroutine: pops until either target count reached, or producer
 	// finished and no more frames arrive within a drain grace period, or hard timeout.
-	wg.Add(1)
 	poppedCount := 0
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		hardDeadline := time.After(5 * time.Second)
 		var producerFinished bool
 		var drainDeadline <-chan time.Time
@@ -244,7 +240,7 @@ func TestJitterBufferConcurrency(t *testing.T) {
 				time.Sleep(200 * time.Microsecond)
 			}
 		}
-	}()
+	})
 
 	wg.Wait()
 	// Under contention some packets may pop as PLC and some real Push events may be
@@ -263,15 +259,15 @@ func TestLargeMultiFramePacket(t *testing.T) {
 	jb := jitter.New(jitter.Config{TargetDelay: 20 * time.Millisecond})
 
 	payload := make([]byte, 80)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		payload[i*10] = byte(0xA0 + i)
 	}
-	if err := jb.Push(50, 4000, payload); err != nil {
+	if err := jb.Push(50, 4000, false, payload); err != nil {
 		t.Fatalf("Push 80-byte payload: %v", err)
 	}
 
 	jb.Flush()
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		f, ok := jb.Pop()
 		if !ok || f == nil {
 			t.Fatalf("frame %d missing (ok=%v)", i, ok)
@@ -290,7 +286,7 @@ func TestMaxDelayEnforcement(t *testing.T) {
 	})
 
 	// Push seq=100 → establishes playoutSeq=100 and initializes.
-	if err := jb.Push(100, 0, make([]byte, 10)); err != nil {
+	if err := jb.Push(100, 0, false, make([]byte, 10)); err != nil {
 		t.Fatalf("Push 100: %v", err)
 	}
 
@@ -299,11 +295,11 @@ func TestMaxDelayEnforcement(t *testing.T) {
 	_, _ = jb.Pop() // pop seq=100, playoutSeq=101
 
 	// seq=103 → diff=2 (< 3), accepted.
-	if err := jb.Push(103, 240, make([]byte, 10)); err != nil {
+	if err := jb.Push(103, 240, false, make([]byte, 10)); err != nil {
 		t.Fatalf("Push 103: %v", err)
 	}
 	// seq=110 → diff=9 (>= 3), rejected as too-far-in-future.
-	if err := jb.Push(110, 800, make([]byte, 10)); err != nil {
+	if err := jb.Push(110, 800, false, make([]byte, 10)); err != nil {
 		t.Fatalf("Push 110 returned err: %v", err)
 	}
 
@@ -315,7 +311,7 @@ func TestMaxDelayEnforcement(t *testing.T) {
 
 func TestPopIntoBoundsCheck(t *testing.T) {
 	jb := jitter.New(jitter.Config{TargetDelay: 10 * time.Millisecond})
-	_ = jb.Push(0, 0, make([]byte, 10))
+	_ = jb.Push(0, 0, false, make([]byte, 10))
 
 	// dst too small: must return ok=false without touching playout state.
 	small := make([]byte, 5)
@@ -335,17 +331,60 @@ func TestPopIntoBoundsCheck(t *testing.T) {
 	}
 }
 
+func TestJitterBufferMarkerBitResync(t *testing.T) {
+	jb := jitter.New(jitter.Config{TargetDelay: 20 * time.Millisecond})
+
+	// First talkspurt: seq 100..102
+	for i := range 3 {
+		payload := []byte{byte(100 + i), 0, 0, 0, 0, 0, 0, 0, 0, 0}
+		if err := jb.Push(uint16(100+i), uint32(i*80), false, payload); err != nil {
+			t.Fatalf("first talkspurt push %d: %v", i, err)
+		}
+	}
+	jb.Flush()
+	for range 3 {
+		_, _ = jb.Pop()
+	}
+
+	// Silence gap; second talkspurt at seq 200 with a large jump.
+	// Without marker bit, playoutSeq=103 and seq=200 triggers MaxDelay rejection
+	// or bursts of PLC. With marker bit the buffer resyncs to seq 200 cleanly.
+	payload200 := []byte{200, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	if err := jb.Push(200, 16000, true, payload200); err != nil {
+		t.Fatalf("second talkspurt (marker=true) push: %v", err)
+	}
+	payload201 := []byte{201, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	if err := jb.Push(201, 16080, false, payload201); err != nil {
+		t.Fatalf("second talkspurt push 201: %v", err)
+	}
+
+	jb.Flush()
+
+	f1, ok1 := jb.Pop()
+	if !ok1 || f1 == nil || f1[0] != 200 {
+		t.Fatalf("expected frame tag=200 after marker resync, got %v (ok=%v)", f1, ok1)
+	}
+	f2, ok2 := jb.Pop()
+	if !ok2 || f2 == nil || f2[0] != 201 {
+		t.Fatalf("expected frame tag=201, got %v (ok=%v)", f2, ok2)
+	}
+
+	if stats := jb.Stats(); stats.EmittedPLC > 0 {
+		t.Errorf("marker resync should emit 0 PLC frames, got %d", stats.EmittedPLC)
+	}
+}
+
 func TestDroppedByWrap(t *testing.T) {
 	jb := jitter.New(jitter.Config{TargetDelay: 50 * time.Millisecond})
 	payload := make([]byte, 10)
 
 	// Push packet 0
-	if err := jb.Push(0, 0, payload); err != nil {
+	if err := jb.Push(0, 0, false, payload); err != nil {
 		t.Fatalf("push 0: %v", err)
 	}
 
 	// Push packet 128 during buffering (which maps to slot 0: 128 & 127 == 0)
-	if err := jb.Push(128, 128*80, payload); err != nil {
+	if err := jb.Push(128, 128*80, false, payload); err != nil {
 		t.Fatalf("push 128: %v", err)
 	}
 
@@ -358,14 +397,16 @@ func TestDroppedByWrap(t *testing.T) {
 func BenchmarkJitterBufferPushPop(b *testing.B) {
 	jb := jitter.New(jitter.Config{TargetDelay: 10 * time.Millisecond})
 	payload := make([]byte, 10)
+	var n uint32
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
-		seq := uint16(i & 0xFFFF)
-		_ = jb.Push(seq, uint32(i*80), payload)
+	for b.Loop() {
+		seq := uint16(n & 0xFFFF)
+		_ = jb.Push(seq, n*80, false, payload)
 		_, _ = jb.Pop()
+		n++
 	}
 }
 
@@ -373,14 +414,16 @@ func BenchmarkJitterBufferPushPopInto(b *testing.B) {
 	jb := jitter.New(jitter.Config{TargetDelay: 10 * time.Millisecond})
 	payload := make([]byte, 10)
 	var out [10]byte
+	var n uint32
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	for i := 0; i < b.N; i++ {
-		seq := uint16(i & 0xFFFF)
-		_ = jb.Push(seq, uint32(i*80), payload)
+	for b.Loop() {
+		seq := uint16(n & 0xFFFF)
+		_ = jb.Push(seq, n*80, false, payload)
 		_, _, _ = jb.PopInto(out[:])
+		n++
 	}
 }
 
@@ -401,8 +444,8 @@ func TestCurrentBufferedIncremental(t *testing.T) {
 	out := make([]byte, 10)
 
 	// Push 4 frames — buffer should be 4.
-	for i := uint16(0); i < 4; i++ {
-		if err := jb.Push(i, uint32(i)*80, makePayload(i)); err != nil {
+	for i := range uint16(4) {
+		if err := jb.Push(i, uint32(i)*80, false, makePayload(i)); err != nil {
 			t.Fatalf("Push %d: %v", i, err)
 		}
 	}
@@ -425,7 +468,7 @@ func TestCurrentBufferedIncremental(t *testing.T) {
 	}
 
 	// Push a duplicate of seq 2 — should not change count.
-	_ = jb.Push(2, 160, makePayload(2))
+	_ = jb.Push(2, 160, false, makePayload(2))
 	if got := jb.Stats().CurrentBuffered; got != 2 {
 		t.Errorf("after dup push: CurrentBuffered=%d, want 2 (dup must not increment)", got)
 	}
@@ -439,7 +482,7 @@ func TestCurrentBufferedIncremental(t *testing.T) {
 	}
 
 	// Reset must also zero the counter.
-	_ = jb.Push(100, 8000, makePayload(100))
+	_ = jb.Push(100, 8000, false, makePayload(100))
 	jb.Reset()
 	if got := jb.Stats().CurrentBuffered; got != 0 {
 		t.Errorf("after Reset: CurrentBuffered=%d, want 0", got)
@@ -456,14 +499,14 @@ func TestBufferedCountNonNegativeUnderPLC(t *testing.T) {
 
 	// Push a single frame, then immediately exit prebuffering.
 	payload := make([]byte, 10)
-	if err := jb.Push(1, 80, payload); err != nil {
+	if err := jb.Push(1, 80, false, payload); err != nil {
 		t.Fatalf("Push: %v", err)
 	}
 	jb.Flush()
 
 	dst := make([]byte, 10)
 	// Pop far more frames than available — exercises PLC and underflow paths.
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		jb.PopInto(dst)
 		if got := jb.Stats().CurrentBuffered; got < 0 {
 			t.Fatalf("iteration %d: CurrentBuffered went negative: %d", i, got)

@@ -75,7 +75,7 @@ func (s *IngressSession) HandleRTP(pkt *pionrtp.Packet) {
 	s.tracker.RecordPacket(pkt.SequenceNumber, pkt.Timestamp, now)
 
 	// 2. Push payload to jitter buffer (with packet reordering)
-	if err := s.jb.Push(pkt.SequenceNumber, pkt.Timestamp, pkt.Payload); err != nil {
+	if err := s.jb.Push(pkt.SequenceNumber, pkt.Timestamp, pkt.Marker, pkt.Payload); err != nil {
 		log.Printf("jitter push error: %v", err)
 	}
 }

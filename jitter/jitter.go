@@ -173,7 +173,13 @@ func (b *Buffer) Reset() {
 // Push inserts an RTP packet containing G.729 payload into the jitter buffer.
 // The packet is slotted by its 16-bit RTP sequence number (RFC 3550 §5.1),
 // and unpacked into individual 10 ms frames for sequential playout.
-func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
+//
+// marker should be set to the RTP M bit (RFC 3550 §5.1). When true it signals
+// the first packet of a new talkspurt after a silence/DTX period. The buffer
+// flushes all stale slots, resets playout to seq, and re-enters the pre-buffering
+// phase so the new speech segment starts cleanly without spurious PLC frames for
+// the elapsed silence.
+func (b *Buffer) Push(seq uint16, timestamp uint32, marker bool, payload []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -191,6 +197,19 @@ func (b *Buffer) Push(seq uint16, timestamp uint32, payload []byte) error {
 		b.initialized = true
 		b.playoutSeq = seq
 		b.playoutFrameIdx = 0
+		b.buffering = true
+		b.lastPacketFrames = nFrames
+	} else if marker {
+		// RTP marker bit: first packet of a new talkspurt (RFC 3550 §5.1).
+		// Clear all stale slots so old speech frames from the previous talkspurt
+		// do not collide with the new sequence range.
+		for i := range b.slots {
+			b.slots[i].valid = false
+		}
+		b.playoutSeq = seq
+		b.playoutFrameIdx = 0
+		b.lossFramesRemaining = 0
+		b.bufferedCount = 0
 		b.buffering = true
 		b.lastPacketFrames = nFrames
 	} else if b.buffering {
@@ -274,10 +293,7 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 
 	b.stats.CurrentBuffered = b.bufferedCount
 
-	targetFrames := int(b.targetDelay / (rtp.FrameDurationMs * time.Millisecond))
-	if targetFrames < 1 {
-		targetFrames = 1
-	}
+	targetFrames := max(int(b.targetDelay/(rtp.FrameDurationMs*time.Millisecond)), 1)
 
 	if b.buffering {
 		if b.bufferedCount >= targetFrames {
@@ -330,13 +346,7 @@ func (b *Buffer) PopInto(dst []byte) (n int, isLoss bool, ok bool) {
 	}
 
 	// Gap detected: packet loss! Advance playoutSeq and signal PLC.
-	lossFrames := b.lastPacketFrames
-	if lossFrames < 1 {
-		lossFrames = 1
-	}
-	if lossFrames > MaxFramesPerPacket {
-		lossFrames = MaxFramesPerPacket
-	}
+	lossFrames := max(min(b.lastPacketFrames, MaxFramesPerPacket), 1)
 
 	b.playoutSeq++
 	b.playoutFrameIdx = 0
