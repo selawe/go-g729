@@ -16,5 +16,9 @@
 *.IN
 *.out
 *.OUT
-*.pst
 *.PST
+
+# Allow canonical ITU-T verification vectors (85 KB total) for conformance testing
+!TEST.IN
+!TEST.BIT
+!TEST.pst
